@@ -34,9 +34,9 @@ astro_calib/
   src/
     pipeline.py        # Pipeline orchestration + CLI entry point
     distance.py        # Module 1: Bayesian parallax + Cepheid Leavitt law
-    temperature.py     # Module 2: Teff, BC_G, luminosity
+    temperature.py     # Module 2: Teff, BC_G, luminosity, radius
     mass.py            # Module 3: Mass-luminosity relation
-    data_access.py     # Gaia DR3 query helpers via astroquery
+    data_access.py     # Gaia DR3 queries + SIMBAD name resolution
   tests/
     test_distance.py
     test_temperature.py
@@ -78,6 +78,23 @@ python -m venv venv
 
 To add a new star, add its data dict to the `STARS` dictionary in `run_stars.py`.
 
+### SIMBAD name lookup
+
+Look up any star by SIMBAD identifier -- HD numbers, Bayer names, common names, etc. The name is resolved to a Gaia DR3 source_id, then queried from the Gaia archive automatically.
+
+```bash
+# Single star
+.\venv\Scripts\python run_stars.py --name "tau Cet"
+
+# Multiple stars
+.\venv\Scripts\python run_stars.py --name "HD 22049" "61 Cyg A" "eps Eri"
+
+# Mix predefined + SIMBAD lookups
+.\venv\Scripts\python run_stars.py sun --name "tau Cet" "HD 22049"
+```
+
+Note: Very bright stars (e.g. Vega, Sirius) may not be in Gaia DR3 due to detector saturation.
+
 ### CLI
 
 Process a single star from a JSON file:
@@ -118,7 +135,7 @@ star = {
 }
 
 result = process_star(star)
-# result contains: distance_pc, teff_K, luminosity_Lsun, mass_Msun, ...
+# result contains: distance_pc, teff_K, luminosity_Lsun, radius_Rsun, mass_Msun, ...
 ```
 
 ### Querying Gaia DR3 directly

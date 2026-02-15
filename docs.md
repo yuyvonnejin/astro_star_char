@@ -1,8 +1,8 @@
-# Astronomy Object Property Pipeline — Spec v1.0
+# Astronomy Object Property Pipeline — Spec v1.1
 
 ## Overall Goal
 
-The objective is for me to be able to understand how to esitmate the characteristics of a star based on astronomical observation. The obvious ones are distance, mass, luminosity, temperature. 
+The objective is for me to be able to understand how to estimate the characteristics of a star based on astronomical observation. The obvious ones are distance, mass, luminosity, radius, temperature.
 
 Below is the first stage implementation, where input is the Gaia DR3 catalog with pre-processed data.
 In the future, I would like to be able to do so directly from light curve. 
@@ -13,9 +13,9 @@ Let's not overwrap or complicate the project, but still adhere to a modula, pipe
 
 ## Overview
 
-Given observational data from the Gaia DR3 catalog, compute physical properties of stars: distance, effective temperature, luminosity, and mass.
+Given observational data from the Gaia DR3 catalog, compute physical properties of stars: distance, effective temperature, luminosity, radius, and mass.
 
-The pipeline consists of three modules executed sequentially. Distance (Module 1) feeds into luminosity (Module 2), which feeds into mass (Module 3). Temperature (Module 2) is derived independently from photometric color.
+The pipeline consists of three modules executed sequentially. Distance (Module 1) feeds into temperature/luminosity/radius (Module 2), which feeds into mass (Module 3). Temperature is derived from photometric color; radius is derived from luminosity and temperature via the Stefan-Boltzmann law.
 
 ---
 
@@ -61,7 +61,7 @@ Each star is represented as a single record, sourced from the Gaia DR3 `gaiadr3.
 | `is_cepheid` | Derived from join to `vari_cepheid` | Boolean flag |
 | `cepheid_period_days` | `vari_cepheid.pf` (as 1/pf) | Pulsation period in days, null if not Cepheid |
 | `teff_gspphot` | `gaia_source.teff_gspphot` | Gaia's own T_eff estimate (for validation) |
-| `lum_gspphot` | `gaia_source.lum_gspphot` | Gaia's own luminosity estimate (for validation) |
+| `lum_gspphot` | `astrophysical_parameters.lum_flame` | Gaia's own luminosity estimate (for validation) |
 
 **Defaults and missing data:**
 - If `ag_gspphot` or `ebpminrp_gspphot` is null, assume 0.0 (no extinction correction).
@@ -72,7 +72,18 @@ Each star is represented as a single record, sourced from the Gaia DR3 `gaiadr3.
 
 ## Data Access
 
-Data is queried from the Gaia DR3 archive via the `astroquery.gaia` Python library, which wraps the ESA TAP+ service.
+Data is queried from the Gaia DR3 archive via the `astroquery.gaia` Python library, which wraps the ESA TAP+ service. Stars can also be resolved by name using SIMBAD (see below).
+
+**SIMBAD name resolution:**
+
+Stars can be looked up by any SIMBAD identifier (HD numbers, Bayer names like "Alp Lyr", common names like "Vega"). The `resolve_simbad_name()` function in `data_access.py` first looks for a Gaia DR3 ID in SIMBAD's identifier list, then falls back to a coordinate-based cone search on Gaia if no direct ID is found.
+
+```python
+from src.data_access import resolve_simbad_name, query_stars_by_id
+
+source_id = resolve_simbad_name("tau Cet")  # returns "2452378776434477184"
+stars = query_stars_by_id([source_id])
+```
 
 **Example query for specific stars:**
 
@@ -80,13 +91,15 @@ Data is queried from the Gaia DR3 archive via the `astroquery.gaia` Python libra
 from astroquery.gaia import Gaia
 
 query = """
-SELECT source_id, ra, dec,
-       parallax, parallax_error, parallax_over_error,
-       phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag,
-       bp_rp, teff_gspphot, lum_gspphot,
-       ag_gspphot, ebpminrp_gspphot
-FROM gaiadr3.gaia_source
-WHERE source_id IN (
+SELECT g.source_id, g.parallax, g.parallax_error,
+       g.phot_g_mean_mag, g.phot_bp_mean_mag, g.phot_rp_mean_mag,
+       g.bp_rp, g.teff_gspphot,
+       g.ag_gspphot, g.ebpminrp_gspphot,
+       ap.mh_gspphot, ap.logg_gspphot, ap.lum_flame
+FROM gaiadr3.gaia_source AS g
+LEFT JOIN gaiadr3.astrophysical_parameters AS ap
+  ON g.source_id = ap.source_id
+WHERE g.source_id IN (
     5853498713190525696,
     5853498713160606720
 )
@@ -98,9 +111,11 @@ result = job.get_results()
 
 **Example query for Cepheids:**
 
+Note: Gaia's TAP+ service uses ADQL, which requires `TOP N` instead of `LIMIT N`.
+
 ```python
 query = """
-SELECT g.source_id, g.parallax, g.parallax_error,
+SELECT TOP 100 g.source_id, g.parallax, g.parallax_error,
        g.phot_g_mean_mag, g.bp_rp,
        g.ag_gspphot, g.ebpminrp_gspphot,
        c.pf, c.type_best_classification
@@ -108,7 +123,6 @@ FROM gaiadr3.gaia_source AS g
 JOIN gaiadr3.vari_cepheid AS c
   ON g.source_id = c.source_id
 WHERE c.type_best_classification = 'DCEP'
-LIMIT 100
 """
 ```
 
@@ -188,9 +202,9 @@ Note: This uses G_0 as a proxy for V-band apparent magnitude, which introduces a
 
 ---
 
-## Module 2: Temperature and Luminosity
+## Module 2: Temperature, Luminosity, and Radius
 
-Computes effective temperature from the dereddened (BP-RP) color index, then derives bolometric luminosity using the distance from Module 1.
+Computes effective temperature from the dereddened (BP-RP) color index, then derives bolometric luminosity using the distance from Module 1, and stellar radius from luminosity and temperature via the Stefan-Boltzmann law.
 
 ### Step 1: Deredden
 
@@ -272,7 +286,17 @@ L_over_Lsun = 10^((4.74 - M_bol) / 2.5)
 
 where M_bol_sun = 4.74 (IAU 2015 B2 resolution).
 
-### Step 6: Validation Cross-Check
+### Step 6: Radius
+
+Stellar radius is derived from luminosity and temperature using the Stefan-Boltzmann law:
+
+```
+R/R_sun = sqrt(L/L_sun) * (T_sun / T_eff)^2
+```
+
+where T_sun = 5772 K. This requires no additional data beyond what Module 2 already computes.
+
+### Step 7: Validation Cross-Check
 
 If `lum_gspphot` is available, compute:
 
@@ -294,6 +318,7 @@ Report this ratio. Values between 0.8 and 1.2 indicate good agreement.
   "BC_G": 1.62,
   "M_bol": 13.47,
   "luminosity_Lsun": 0.00155,
+  "radius_Rsun": 0.154,
   "luminosity_validation_ratio": 0.97
 }
 ```
@@ -390,6 +415,7 @@ The complete output per star combines all three modules:
   "BC_G": 1.62,
   "M_bol": 13.47,
   "luminosity_Lsun": 0.00155,
+  "radius_Rsun": 0.154,
   "luminosity_validation_ratio": 0.97,
 
   "mass_Msun": 0.12,
@@ -406,13 +432,13 @@ Output format: JSON (one object per star) or CSV for batch processing.
 
 The pipeline should be tested against these well-characterized stars:
 
-| Star | Type | Expected T_eff (K) | Expected L (L_sun) | Expected M (M_sun) | Notes |
-|---|---|---|---|---|---|
-| Sun | G2V dwarf | 5772 | 1.0 | 1.0 | Fundamental reference. Use known values directly. |
-| Alpha Centauri A | G2V dwarf | ~5790 | ~1.52 | ~1.10 | Nearby, well-measured binary. |
-| Proxima Centauri | M5.5V dwarf | ~3042 | ~0.0017 | ~0.12 | Nearest star. Tests cool end of calibration. |
-| Sirius A | A1V dwarf | ~9940 | ~25.4 | ~2.06 | Tests hot boundary (outside BC_G range, should be flagged). |
-| Delta Cephei | F5Ib Cepheid | ~5500-6800 (variable) | ~2000 | ~4.5 | Tests Cepheid distance method. |
+| Star | Type | Expected T_eff (K) | Expected L (L_sun) | Expected R (R_sun) | Expected M (M_sun) | Notes |
+|---|---|---|---|---|---|---|
+| Sun | G2V dwarf | 5772 | 1.0 | 1.0 | 1.0 | Fundamental reference. Use known values directly. |
+| Alpha Centauri A | G2V dwarf | ~5790 | ~1.52 | ~1.22 | ~1.10 | Nearby, well-measured binary. |
+| Proxima Centauri | M5.5V dwarf | ~3042 | ~0.0017 | ~0.15 | ~0.12 | Nearest star. Tests cool end of calibration. |
+| Sirius A | A1V dwarf | ~9940 | ~25.4 | ~1.71 | ~2.06 | Tests hot boundary (outside BC_G range, should be flagged). |
+| Delta Cephei | F5Ib Cepheid | ~5500-6800 (variable) | ~2000 | ~44 | ~4.5 | Tests Cepheid distance method. |
 
 ---
 
