@@ -28,6 +28,7 @@ BC_COEFFS_COOL = {
 }
 
 M_BOL_SUN = 4.74  # IAU 2015 B2
+T_EFF_SUN = 5772.0  # K
 
 
 def compute_temperature_luminosity(star_dict, distance_pc):
@@ -88,6 +89,7 @@ def compute_temperature_luminosity(star_dict, distance_pc):
         result["BC_G"] = None
         result["M_bol"] = None
         result["luminosity_Lsun"] = None
+        result["radius_Rsun"] = None
         result["luminosity_validation_ratio"] = None
         return result
 
@@ -99,7 +101,12 @@ def compute_temperature_luminosity(star_dict, distance_pc):
     result["M_bol"] = m_bol
     result["luminosity_Lsun"] = luminosity
 
-    # Step 6: Validation cross-check
+    # Step 6: Radius via Stefan-Boltzmann law
+    # R/R_sun = sqrt(L/L_sun) * (T_sun / T_eff)^2
+    radius_Rsun = luminosity**0.5 * (T_EFF_SUN / teff_K)**2
+    result["radius_Rsun"] = radius_Rsun
+
+    # Step 7: Validation cross-check
     lum_gspphot = star_dict.get("lum_gspphot")
     if lum_gspphot is not None and lum_gspphot > 0:
         ratio = luminosity / lum_gspphot
@@ -109,8 +116,8 @@ def compute_temperature_luminosity(star_dict, distance_pc):
         result["luminosity_validation_ratio"] = None
 
     logger.info(
-        "Teff=%.0f K, M_G=%.3f, BC_G=%.4f, L=%.5f Lsun",
-        teff_K, m_g, bc_g, luminosity,
+        "Teff=%.0f K, M_G=%.3f, BC_G=%.4f, L=%.5f Lsun, R=%.4f Rsun",
+        teff_K, m_g, bc_g, luminosity, radius_Rsun,
     )
     return result
 

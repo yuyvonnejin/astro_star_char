@@ -1,13 +1,13 @@
 # Astronomy Star Characterization Pipeline
 
-Compute physical properties of stars -- distance, temperature, luminosity, and mass -- from Gaia DR3 survey data.
+Compute physical properties of stars -- distance, temperature, luminosity, radius, and mass -- from Gaia DR3 survey data.
 
 ## What This Does
 
 Given photometric observations from the [Gaia DR3](https://www.cosmos.esa.int/web/gaia/dr3) catalog, this pipeline runs three sequential modules:
 
 1. **Distance** (Module 1): Bayesian parallax inversion with an exponentially decreasing space-density prior (Bailer-Jones 2015), or Cepheid period-luminosity relation (Leavitt Law) for classical Cepheids.
-2. **Temperature + Luminosity** (Module 2): Effective temperature from the dereddened (BP-RP) color index using the Mucciarelli et al. (2021) calibration, then bolometric correction and luminosity via the distance modulus.
+2. **Temperature + Luminosity + Radius** (Module 2): Effective temperature from the dereddened (BP-RP) color index using the Mucciarelli et al. (2021) calibration, then bolometric correction, luminosity via the distance modulus, and radius via the Stefan-Boltzmann law.
 3. **Mass** (Module 3): Piecewise mass-luminosity relation for main-sequence stars.
 
 ```
@@ -19,6 +19,9 @@ Gaia DR3 observation
         v
   [Color BP-RP]  ------>  Module 2: Teff (K) + Luminosity (Lsun)
   + distance
+        |
+        v
+  [L + Teff]  -------->  Radius (Rsun) via Stefan-Boltzmann
         |
         v
   [Luminosity]  ------->  Module 3: Mass (Msun)
@@ -41,7 +44,8 @@ astro_calib/
     test_pipeline.py   # Integration tests against validation targets
   logs/                # Runtime logs
   output/              # Pipeline output files
-  docs.md              # Full technical spec
+  run_stars.py           # Run pipeline on predefined or custom stars
+  docs.md                # Full technical spec
   tutorial_stellar_properties.ipynb  # Educational walkthrough notebook
   requirements.txt
 ```
@@ -61,6 +65,18 @@ python -m venv venv
 ```
 
 ## Usage
+
+### Quick run (predefined stars)
+
+```bash
+# Run all predefined stars (Sun, Proxima Cen, Sirius A, Delta Cep, Alpha Cen A, Barnard's Star)
+.\venv\Scripts\python run_stars.py
+
+# Run specific stars
+.\venv\Scripts\python run_stars.py sun alpha_cen_a
+```
+
+To add a new star, add its data dict to the `STARS` dictionary in `run_stars.py`.
 
 ### CLI
 
@@ -116,18 +132,16 @@ cepheids = query_cepheids(limit=50)
 
 ## Example Output
 
-Proxima Centauri (nearest star to the Sun):
+Sun-like synthetic star at 10 pc:
 
-```json
-{
-  "source_id": "5853498713190525696",
-  "distance_pc": 1.3017,
-  "distance_method": "parallax_bayesian",
-  "teff_K": 2737,
-  "teff_flag": "outside_valid_range",
-  "mass_Msun": 0.12,
-  "is_main_sequence": true
-}
+```
+  Star                : sun
+  Distance            : 10.0023 pc [9.99, 10.00]  (parallax_bayesian)
+  Temperature         : 5684 +/- 61 K  (ok)
+  Luminosity          : 0.87657 Lsun
+  Radius              : 0.9655 Rsun
+  Mass                : 0.968 Msun
+  Main sequence       : True
 ```
 
 ## Tests
@@ -141,6 +155,14 @@ Proxima Centauri (nearest star to the Sun):
 ## Tutorial
 
 The `tutorial_stellar_properties.ipynb` notebook walks through the physics and math behind each module step by step, with visualizations. Open it in Jupyter and select the **Python (astro_calib)** kernel.
+
+## Style Guide
+
+- Keep code simple and concise. No over-engineering.
+- Flat is better than nested. Avoid unnecessary abstractions.
+- No print statements -- use logging.
+- Don't add error handling for scenarios that can't happen.
+- Prefer adding a few lines inline over creating a helper for a one-time operation.
 
 ## References
 
