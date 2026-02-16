@@ -149,17 +149,21 @@ cepheids = query_cepheids(limit=50)
 
 ## Example Output
 
-Sun-like synthetic star at 10 pc:
+Sun-like synthetic star at 10 pc (with reference comparison):
 
 ```
   Star                : sun
   Distance            : 10.0023 pc [9.99, 10.00]  (parallax_bayesian)
   Temperature         : 5684 +/- 61 K  (ok)
+    (reference)       : 5772 K  (err: 1.5%)
   Luminosity          : 0.87657 Lsun
-  Radius              : 0.9655 Rsun
-  Mass                : 0.968 Msun
+    (reference)       : 1.00000 Lsun  (err: 12.3%)
+  Radius              : 0.9655 Rsun  (ref: 1.0000 Rsun, err: 3.5%)
+  Mass                : 0.968 Msun  (ref: 1.000 Msun, err: 3.2%)
   Main sequence       : True
 ```
+
+Reference values come from the Gaia FLAME module (`radius_flame`, `mass_flame`, `distance_gspphot`, `lum_flame`, `teff_gspphot`) for SIMBAD-resolved stars, or from literature for predefined stars. Percent error is shown when reference data is available.
 
 ## Tests
 

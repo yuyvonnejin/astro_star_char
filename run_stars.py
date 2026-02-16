@@ -44,6 +44,9 @@ STARS = {
         "cepheid_period_days": None,
         "teff_gspphot": 5772.0,
         "lum_gspphot": 1.0,
+        "ref_radius_Rsun": 1.0,
+        "ref_mass_Msun": 1.0,
+        "ref_distance_pc": 0.0,  # N/A for synthetic
     },
     "proxima_cen": {
         "source_id": "5853498713190525696",
@@ -59,8 +62,11 @@ STARS = {
         "logg": 4.5,
         "is_cepheid": False,
         "cepheid_period_days": None,
-        "teff_gspphot": None,
-        "lum_gspphot": None,
+        "teff_gspphot": 3042.0,
+        "lum_gspphot": 0.00155,
+        "ref_radius_Rsun": 0.1542,
+        "ref_mass_Msun": 0.1221,
+        "ref_distance_pc": 1.301,
     },
     "sirius_a": {
         "source_id": "sirius_a_synthetic",
@@ -78,6 +84,9 @@ STARS = {
         "cepheid_period_days": None,
         "teff_gspphot": 9940.0,
         "lum_gspphot": 25.4,
+        "ref_radius_Rsun": 1.711,
+        "ref_mass_Msun": 2.063,
+        "ref_distance_pc": 2.637,
     },
     "delta_cep": {
         "source_id": "delta_cep_synthetic",
@@ -95,6 +104,9 @@ STARS = {
         "cepheid_period_days": 5.37,
         "teff_gspphot": 5900.0,
         "lum_gspphot": 2000.0,
+        "ref_radius_Rsun": 44.5,
+        "ref_mass_Msun": 4.5,
+        "ref_distance_pc": 273.0,
     },
     "alpha_cen_a": {
         "source_id": "alpha_cen_a_synthetic",
@@ -112,6 +124,9 @@ STARS = {
         "cepheid_period_days": None,
         "teff_gspphot": 5790.0,
         "lum_gspphot": 1.52,
+        "ref_radius_Rsun": 1.2234,
+        "ref_mass_Msun": 1.1055,
+        "ref_distance_pc": 1.339,
     },
     "barnards_star": {
         "source_id": "4472832130942575872",
@@ -129,53 +144,84 @@ STARS = {
         "cepheid_period_days": None,
         "teff_gspphot": 3278.0,
         "lum_gspphot": 0.0035,
+        "ref_radius_Rsun": 0.187,
+        "ref_mass_Msun": 0.144,
+        "ref_distance_pc": 1.828,
     },
 }
 
 
+def _fmt_compare(label, computed, ref, unit, comp_fmt=".4f", ref_fmt=".4f"):
+    """Format a line showing computed vs reference value with percent error."""
+    if computed is not None and ref is not None and ref != 0:
+        pct = abs(computed - ref) / abs(ref) * 100
+        return f"  {label:20s}: {computed:{comp_fmt}} {unit}  (ref: {ref:{ref_fmt}} {unit}, err: {pct:.1f}%)"
+    elif computed is not None:
+        return f"  {label:20s}: {computed:{comp_fmt}} {unit}"
+    else:
+        return f"  {label:20s}: N/A"
+
+
 def format_result(name, result):
-    """Format a single star result for display."""
+    """Format a single star result for display with reference comparisons."""
     lines = []
     lines.append(f"  {'Star':20s}: {name}")
     lines.append(f"  {'Source ID':20s}: {result.get('source_id', '?')}")
 
+    # Distance
     d = result.get("distance_pc")
     method = result.get("distance_method", "?")
+    ref_d = result.get("ref_distance_pc")
     if d is not None:
         lo = result.get("distance_lower_pc")
         hi = result.get("distance_upper_pc")
         interval = f" [{lo:.2f}, {hi:.2f}]" if lo and hi else ""
-        lines.append(f"  {'Distance':20s}: {d:.4f} pc{interval}  ({method})")
+        base = f"  {'Distance':20s}: {d:.4f} pc{interval}  ({method})"
+        if ref_d is not None and ref_d > 0:
+            pct = abs(d - ref_d) / abs(ref_d) * 100
+            base += f"\n  {'  (reference)':20s}: {ref_d:.4f} pc  (err: {pct:.1f}%)"
+        lines.append(base)
     else:
         lines.append(f"  {'Distance':20s}: FAILED")
 
+    # Temperature
     teff = result.get("teff_K")
+    ref_teff = result.get("teff_gspphot")
     if teff is not None:
         flag = result.get("teff_flag", "")
         unc = result.get("teff_uncertainty_K", "?")
-        lines.append(f"  {'Temperature':20s}: {teff:.0f} +/- {unc} K  ({flag})")
+        base = f"  {'Temperature':20s}: {teff:.0f} +/- {unc} K  ({flag})"
+        if ref_teff is not None and ref_teff > 0:
+            pct = abs(teff - ref_teff) / ref_teff * 100
+            base += f"\n  {'  (reference)':20s}: {ref_teff:.0f} K  (err: {pct:.1f}%)"
+        lines.append(base)
 
+    # Luminosity
     lum = result.get("luminosity_Lsun")
+    ref_lum = result.get("lum_gspphot")
     if lum is not None:
-        lines.append(f"  {'Luminosity':20s}: {lum:.5f} Lsun")
-        ratio = result.get("luminosity_validation_ratio")
-        if ratio is not None:
-            lines.append(f"  {'  validation ratio':20s}: {ratio:.3f}")
+        base = f"  {'Luminosity':20s}: {lum:.5f} Lsun"
+        if ref_lum is not None and ref_lum > 0:
+            pct = abs(lum - ref_lum) / ref_lum * 100
+            base += f"\n  {'  (reference)':20s}: {ref_lum:.5f} Lsun  (err: {pct:.1f}%)"
+        lines.append(base)
     else:
         lines.append(f"  {'Luminosity':20s}: N/A")
 
+    # Radius
     radius = result.get("radius_Rsun")
-    if radius is not None:
-        lines.append(f"  {'Radius':20s}: {radius:.4f} Rsun")
-    else:
-        lines.append(f"  {'Radius':20s}: N/A")
+    ref_radius = result.get("ref_radius_Rsun")
+    lines.append(_fmt_compare("Radius", radius, ref_radius, "Rsun"))
 
+    # Mass
     mass = result.get("mass_Msun")
+    ref_mass = result.get("ref_mass_Msun")
     if mass is not None:
-        lines.append(f"  {'Mass':20s}: {mass:.3f} Msun")
+        lines.append(_fmt_compare("Mass", mass, ref_mass, "Msun", ".3f", ".3f"))
     else:
         flag = result.get("mass_flag", "?")
-        lines.append(f"  {'Mass':20s}: N/A ({flag})")
+        ref_str = f"  (ref: {ref_mass:.3f} Msun)" if ref_mass is not None else ""
+        lines.append(f"  {'Mass':20s}: N/A ({flag}){ref_str}")
 
     ms = result.get("is_main_sequence")
     if ms is not None:

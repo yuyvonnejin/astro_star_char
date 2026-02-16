@@ -39,7 +39,10 @@ Each star is represented as a single record, sourced from the Gaia DR3 `gaiadr3.
   "is_cepheid": false,
   "cepheid_period_days": null,
   "teff_gspphot": null,
-  "lum_gspphot": null
+  "lum_gspphot": null,
+  "ref_radius_Rsun": null,
+  "ref_mass_Msun": null,
+  "ref_distance_pc": null
 }
 ```
 
@@ -60,8 +63,11 @@ Each star is represented as a single record, sourced from the Gaia DR3 `gaiadr3.
 | `logg` | `astrophysical_parameters.logg_gspphot` or assumed | Surface gravity log(g) (dex). Default: 4.0 |
 | `is_cepheid` | Derived from join to `vari_cepheid` | Boolean flag |
 | `cepheid_period_days` | `vari_cepheid.pf` (as 1/pf) | Pulsation period in days, null if not Cepheid |
-| `teff_gspphot` | `gaia_source.teff_gspphot` | Gaia's own T_eff estimate (for validation) |
-| `lum_gspphot` | `astrophysical_parameters.lum_flame` | Gaia's own luminosity estimate (for validation) |
+| `teff_gspphot` | `gaia_source.teff_gspphot` | Gaia's own T_eff estimate (for comparison) |
+| `lum_gspphot` | `astrophysical_parameters.lum_flame` | Gaia FLAME luminosity (for comparison) |
+| `ref_radius_Rsun` | `astrophysical_parameters.radius_flame` | Gaia FLAME radius in R_sun (for comparison) |
+| `ref_mass_Msun` | `astrophysical_parameters.mass_flame` | Gaia FLAME mass in M_sun (for comparison) |
+| `ref_distance_pc` | `astrophysical_parameters.distance_gspphot` | Gaia photo-geometric distance in pc (for comparison) |
 
 **Defaults and missing data:**
 - If `ag_gspphot` or `ebpminrp_gspphot` is null, assume 0.0 (no extinction correction).
@@ -95,7 +101,8 @@ SELECT g.source_id, g.parallax, g.parallax_error,
        g.phot_g_mean_mag, g.phot_bp_mean_mag, g.phot_rp_mean_mag,
        g.bp_rp, g.teff_gspphot,
        g.ag_gspphot, g.ebpminrp_gspphot,
-       ap.mh_gspphot, ap.logg_gspphot, ap.lum_flame
+       ap.mh_gspphot, ap.logg_gspphot, ap.lum_flame,
+       ap.radius_flame, ap.mass_flame, ap.distance_gspphot
 FROM gaiadr3.gaia_source AS g
 LEFT JOIN gaiadr3.astrophysical_parameters AS ap
   ON g.source_id = ap.source_id
@@ -395,11 +402,17 @@ mass_Msun = L ** (1.0 / alpha)
 
 ## Pipeline Output
 
-The complete output per star combines all three modules:
+The complete output per star combines all three modules plus reference data:
 
 ```json
 {
   "source_id": "5853498713190525696",
+
+  "teff_gspphot": 3042.0,
+  "lum_gspphot": 0.00155,
+  "ref_radius_Rsun": 0.1542,
+  "ref_mass_Msun": 0.1221,
+  "ref_distance_pc": 1.301,
 
   "distance_pc": 1.301,
   "distance_lower_pc": 1.298,
@@ -423,6 +436,8 @@ The complete output per star combines all three modules:
   "is_main_sequence": true
 }
 ```
+
+The `ref_*` and `*_gspphot` fields are official Gaia values for comparison against the pipeline's computed estimates. For SIMBAD-resolved stars these come from the Gaia FLAME module; for predefined stars they are literature values.
 
 Output format: JSON (one object per star) or CSV for batch processing.
 

@@ -60,6 +60,16 @@ def process_star(star_dict):
 
     result = {"source_id": source_id}
 
+    # Forward reference (official) values for comparison
+    REF_KEYS = [
+        "teff_gspphot", "lum_gspphot",
+        "ref_radius_Rsun", "ref_mass_Msun", "ref_distance_pc",
+    ]
+    for key in REF_KEYS:
+        val = star.get(key)
+        if val is not None:
+            result[key] = val
+
     # Module 1: Distance
     dist_result = compute_distance(star)
     result.update(dist_result)

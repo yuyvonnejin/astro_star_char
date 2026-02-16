@@ -93,7 +93,8 @@ def query_stars_by_id(source_ids):
            g.phot_g_mean_mag, g.phot_bp_mean_mag, g.phot_rp_mean_mag,
            g.bp_rp, g.teff_gspphot,
            g.ag_gspphot, g.ebpminrp_gspphot,
-           ap.mh_gspphot, ap.logg_gspphot, ap.lum_flame
+           ap.mh_gspphot, ap.logg_gspphot, ap.lum_flame,
+           ap.radius_flame, ap.mass_flame, ap.distance_gspphot
     FROM gaiadr3.gaia_source AS g
     LEFT JOIN gaiadr3.astrophysical_parameters AS ap
       ON g.source_id = ap.source_id
@@ -120,6 +121,9 @@ def query_stars_by_id(source_ids):
             "logg": _val(row, "logg_gspphot"),
             "teff_gspphot": _val(row, "teff_gspphot"),
             "lum_gspphot": _val(row, "lum_flame"),
+            "ref_radius_Rsun": _val(row, "radius_flame"),
+            "ref_mass_Msun": _val(row, "mass_flame"),
+            "ref_distance_pc": _val(row, "distance_gspphot"),
             "is_cepheid": False,
             "cepheid_period_days": None,
         }
