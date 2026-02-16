@@ -1,0 +1,400 @@
+/* Stellar Property Pipeline -- Web App Styles */
+
+:root {
+  --bg: #0f172a;
+  --bg-card: #1e293b;
+  --bg-input: #334155;
+  --text: #e2e8f0;
+  --text-muted: #94a3b8;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --border: #475569;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --error: #ef4444;
+  --code-bg: #0f172a;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+/* Header */
+header {
+  text-align: center;
+  padding: 30px 0 20px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+header h1 {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+header p {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+}
+
+/* Input section */
+.input-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.input-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.input-row input[type="text"] {
+  flex: 1;
+  padding: 10px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.input-row input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.btn {
+  padding: 10px 20px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.btn:hover {
+  background: var(--accent-hover);
+}
+
+.btn-sm {
+  padding: 6px 14px;
+  font-size: 0.85rem;
+}
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.btn-outline:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* Example buttons */
+.examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.examples label {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin-right: 4px;
+  align-self: center;
+}
+
+/* Manual input panel */
+.manual-toggle {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  border: none;
+  background: none;
+  text-decoration: underline;
+}
+
+.manual-toggle:hover {
+  color: var(--text);
+}
+
+#manual-panel {
+  display: none;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.manual-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.manual-field label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-bottom: 3px;
+}
+
+.manual-field input {
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.manual-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkbox-field input[type="checkbox"] {
+  width: auto;
+}
+
+/* Status */
+.status {
+  display: none;
+  padding: 10px 16px;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  margin-bottom: 16px;
+}
+
+.status.loading {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.status.success {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--success);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.status.error {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--error);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+/* Pipeline steps */
+.step {
+  display: none;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+
+.step-header {
+  padding: 14px 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  user-select: none;
+}
+
+.step-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.step-number {
+  background: var(--accent);
+  color: white;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.step-header h3 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.step-header .chevron {
+  margin-left: auto;
+  transition: transform 0.2s;
+  color: var(--text-muted);
+}
+
+.step-header.collapsed .chevron {
+  transform: rotate(-90deg);
+}
+
+.step-content {
+  padding: 0 20px 20px;
+}
+
+.step-content.collapsed {
+  display: none;
+}
+
+/* Formula display */
+.formula {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 14px;
+  font-family: "Fira Code", "Consolas", monospace;
+  font-size: 0.88rem;
+  color: #93c5fd;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+/* Calculation steps */
+.calc-steps {
+  padding: 10px 0;
+}
+
+.calc-steps p {
+  margin: 4px 0;
+  font-size: 0.92rem;
+}
+
+/* Notes and warnings */
+.note {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-style: italic;
+  margin: 8px 0;
+}
+
+.warning {
+  color: var(--warning);
+  font-size: 0.9rem;
+}
+
+.good {
+  color: var(--success);
+}
+
+/* Data table */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 0.9rem;
+}
+
+.data-table th {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 2px solid var(--border);
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.data-table td {
+  padding: 6px 12px;
+  border-bottom: 1px solid rgba(71, 85, 105, 0.4);
+}
+
+.data-table code {
+  background: var(--code-bg);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.88rem;
+}
+
+.results-table td:nth-child(2) {
+  color: var(--accent);
+}
+
+/* HR diagram and summary sections */
+#summary, #hr-diagram {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+#summary h3, #hr-diagram h3 {
+  margin-bottom: 12px;
+}
+
+/* Footer */
+footer {
+  text-align: center;
+  padding: 20px 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  border-top: 1px solid var(--border);
+  margin-top: 20px;
+}
+
+footer a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+footer a:hover {
+  text-decoration: underline;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .container {
+    padding: 12px;
+  }
+  .manual-grid {
+    grid-template-columns: 1fr;
+  }
+  .input-row {
+    flex-direction: column;
+  }
+}
