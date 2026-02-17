@@ -1,4 +1,4 @@
-"""Pipeline orchestration: chains distance -> temperature/luminosity -> mass -> lightcurve."""
+"""Pipeline orchestration: chains distance -> temperature/luminosity -> mass -> lightcurve -> transit."""
 
 import argparse
 import json
@@ -41,8 +41,8 @@ def _apply_defaults(star_dict):
     return out
 
 
-def process_star(star_dict, include_lightcurve=False, lc_target=None,
-                 lc_mission=None, lc_max_sectors=20):
+def process_star(star_dict, include_lightcurve=False, include_transit=False,
+                 lc_target=None, lc_mission=None, lc_max_sectors=20):
     """Run the full pipeline on a single star record.
 
     Parameters
@@ -51,6 +51,9 @@ def process_star(star_dict, include_lightcurve=False, lc_target=None,
         Input record matching the input schema from docs.md.
     include_lightcurve : bool
         If True, run Module 4 (light curve analysis via MAST).
+    include_transit : bool
+        If True, run Module 5 (BLS transit detection + planet properties).
+        Requires include_lightcurve=True (auto-enabled if transit requested).
     lc_target : str, optional
         Target name for MAST light curve search. If None, not searched.
     lc_mission : str, optional
@@ -63,6 +66,10 @@ def process_star(star_dict, include_lightcurve=False, lc_target=None,
     dict
         Combined output from all modules.
     """
+    # Transit analysis requires light curve data
+    if include_transit and not include_lightcurve:
+        logger.info("Transit analysis requested; auto-enabling light curve retrieval")
+        include_lightcurve = True
     star = _apply_defaults(star_dict)
     source_id = star.get("source_id", "unknown")
     logger.info("Processing star %s", source_id)
@@ -105,8 +112,9 @@ def process_star(star_dict, include_lightcurve=False, lc_target=None,
         result["is_main_sequence"] = None
 
     # Module 4: Light curve analysis (optional)
+    lc_data = None  # Retained for Module 5 if needed
     if include_lightcurve and lc_target is not None:
-        lc_result = _run_lightcurve_analysis(lc_target, lc_mission, lc_max_sectors)
+        lc_result, lc_data = _run_lightcurve_analysis(lc_target, lc_mission, lc_max_sectors)
         result.update(lc_result)
 
         # Feed detected Cepheid period back into distance if applicable
@@ -126,12 +134,28 @@ def process_star(star_dict, include_lightcurve=False, lc_target=None,
         result["lightcurve_available"] = False
         logger.info("Light curve requested but no target name provided for %s", source_id)
 
+    # Module 5: Transit detection and planet characterization (optional)
+    if include_transit and lc_data is not None:
+        stellar_props = {
+            "radius_Rsun": result.get("radius_Rsun"),
+            "mass_Msun": result.get("mass_Msun"),
+            "teff_K": result.get("teff_K"),
+            "luminosity_Lsun": result.get("luminosity_Lsun"),
+        }
+        transit_result = _run_transit_analysis(lc_data, stellar_props)
+        result.update(transit_result)
+    elif include_transit:
+        result["transit_detected"] = None
+        result["planet_flag"] = "no_lightcurve"
+        logger.info("Transit analysis requested but no light curve data available for %s",
+                     source_id)
+
     logger.info("Finished star %s", source_id)
     return result
 
 
 def _run_lightcurve_analysis(target, mission, max_sectors):
-    """Run Module 4 light curve analysis. Returns result dict."""
+    """Run Module 4 light curve analysis. Returns (result_dict, lc_data)."""
     from src.lightcurve import retrieve_lightcurve
     from src.periodogram import analyze_lightcurve
 
@@ -140,9 +164,18 @@ def _run_lightcurve_analysis(target, mission, max_sectors):
 
     if lc_data is None:
         logger.info("No light curve data found for '%s'", target)
-        return {"lightcurve_available": False}
+        return {"lightcurve_available": False}, None
 
     result = analyze_lightcurve(lc_data)
+    return result, lc_data
+
+
+def _run_transit_analysis(lc_data, stellar_props):
+    """Run Module 5 transit detection and planet characterization. Returns result dict."""
+    from src.transit import analyze_transit
+
+    logger.info("Module 5: running BLS transit detection")
+    result = analyze_transit(lc_data, stellar_props)
     return result
 
 

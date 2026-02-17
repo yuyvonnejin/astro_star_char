@@ -255,6 +255,50 @@ def format_result(name, result):
     elif result.get("lightcurve_available") is False:
         lines.append(f"  {'Light Curve':20s}: not available")
 
+    # Module 5: Transit detection and planet properties
+    if result.get("transit_detected") is True:
+        lines.append(f"  {'--- Transit ---':20s}")
+        t_period = result.get("transit_period_days")
+        t_depth_ppm = result.get("transit_depth_ppm")
+        t_dur = result.get("transit_duration_hours")
+        t_sde = result.get("transit_sde")
+        n_tr = result.get("n_transits_observed")
+        lines.append(f"  {'Transit Period':20s}: {t_period:.4f} days (SDE: {t_sde}, {n_tr} transits)")
+        lines.append(f"  {'Transit Depth':20s}: {t_depth_ppm:.0f} ppm")
+        lines.append(f"  {'Transit Duration':20s}: {t_dur:.2f} hours")
+
+        # Planet properties
+        rp = result.get("planet_radius_Rearth")
+        if rp is not None:
+            lines.append(f"  {'--- Planet ---':20s}")
+            rp_jup = result.get("planet_radius_Rjup")
+            size_class = result.get("planet_size_class", "?")
+            lines.append(f"  {'Planet Radius':20s}: {rp:.2f} R_earth ({rp_jup:.3f} R_jup) [{size_class}]")
+
+            a_AU = result.get("orbital_semi_major_axis_AU")
+            if a_AU is not None:
+                lines.append(f"  {'Orbital Distance':20s}: {a_AU:.5f} AU")
+
+            T_eq = result.get("equilibrium_temp_K")
+            if T_eq is not None:
+                lines.append(f"  {'Equilibrium Temp':20s}: {T_eq:.0f} K")
+
+            insol = result.get("insolation_Searth")
+            if insol is not None:
+                lines.append(f"  {'Insolation':20s}: {insol:.1f} S_earth")
+
+            in_hz = result.get("in_habitable_zone")
+            if in_hz is not None:
+                hz_inner = result.get("hz_conservative_inner_AU", "?")
+                hz_outer = result.get("hz_conservative_outer_AU", "?")
+                lines.append(f"  {'Habitable Zone':20s}: {'YES' if in_hz else 'no'} (HZ: {hz_inner}-{hz_outer} AU)")
+        else:
+            pflag = result.get("planet_flag", "?")
+            lines.append(f"  {'Planet Properties':20s}: incomplete ({pflag})")
+    elif result.get("transit_detected") is False:
+        tflag = result.get("transit_flag", "?")
+        lines.append(f"  {'Transit':20s}: not detected ({tflag})")
+
     return "\n".join(lines)
 
 
@@ -273,12 +317,15 @@ def resolve_and_query(simbad_name):
     return simbad_name, stars[0]
 
 
-def run(predefined_names=None, simbad_names=None, include_lightcurve=False):
+def run(predefined_names=None, simbad_names=None, include_lightcurve=False,
+        include_transit=False):
     """Run pipeline on predefined and/or SIMBAD-resolved stars."""
     print("=" * 60)
     print("Stellar Property Pipeline")
     if include_lightcurve:
         print("  (with light curve analysis)")
+    if include_transit:
+        print("  (with transit detection)")
     print("=" * 60)
 
     results = {}
@@ -303,9 +350,9 @@ def run(predefined_names=None, simbad_names=None, include_lightcurve=False):
             logger.warning("Unknown predefined star: %s (available: %s)", name, ", ".join(STARS.keys()))
             continue
         print(f"\n--- {name} ---")
-        lc_target = PREDEFINED_LC_NAMES.get(name) if include_lightcurve else None
+        lc_target = PREDEFINED_LC_NAMES.get(name) if (include_lightcurve or include_transit) else None
         result = process_star(star_data, include_lightcurve=include_lightcurve,
-                              lc_target=lc_target)
+                              include_transit=include_transit, lc_target=lc_target)
         results[name] = result
         print(format_result(name, result))
 
@@ -318,9 +365,9 @@ def run(predefined_names=None, simbad_names=None, include_lightcurve=False):
             continue
         display_name, star_data = resolved
         # Use the SIMBAD name directly as the MAST search target
-        lc_target = simbad_name if include_lightcurve else None
+        lc_target = simbad_name if (include_lightcurve or include_transit) else None
         result = process_star(star_data, include_lightcurve=include_lightcurve,
-                              lc_target=lc_target)
+                              include_transit=include_transit, lc_target=lc_target)
         results[display_name] = result
         print(format_result(display_name, result))
 
@@ -341,8 +388,10 @@ if __name__ == "__main__":
                         help="SIMBAD names to resolve (e.g. Vega, 'Alp Lyr', 'HD 172167')")
     parser.add_argument("--lightcurve", action="store_true",
                         help="Enable Module 4: download and analyze MAST light curves")
+    parser.add_argument("--transit", action="store_true",
+                        help="Enable Module 5: BLS transit detection and planet characterization")
     args = parser.parse_args()
 
     predefined = args.predefined if args.predefined else None
     run(predefined_names=predefined, simbad_names=args.simbad_names,
-        include_lightcurve=args.lightcurve)
+        include_lightcurve=args.lightcurve, include_transit=args.transit)

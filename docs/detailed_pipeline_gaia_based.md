@@ -1,4 +1,4 @@
-# Astronomy Object Property Pipeline — Spec v2.0
+# Astronomy Object Property Pipeline — Spec v3.0
 
 ## Overall Goal
 
@@ -546,6 +546,94 @@ result = process_star(star_dict, include_lightcurve=True, lc_target="Proxima Cen
 
 ---
 
+## Module 5: Transit Detection and Planet Characterization (v3.0)
+
+Uses BLS (Box Least Squares) to detect transit signals in light curves, then combines transit observables with Phase 1 stellar properties to derive physical properties of the orbiting planet.
+
+### Module 5a: BLS Transit Detection
+
+**Method:** BLS periodogram via lightkurve (Kovacs, Zucker & Mazeh 2002).
+
+BLS is purpose-built for finding periodic box-shaped dips -- exactly what transits look like. This complements Lomb-Scargle (Module 4b) which is optimized for sinusoidal signals.
+
+- Period range: 0.5 to 100 days (capped at half the time baseline).
+- Duration grid: determined automatically by lightkurve.
+- Significance: Signal Detection Efficiency (SDE) = (max_power - mean) / std. SDE > 6 for detection.
+- Reports: period, depth, duration, epoch, SDE, number of observed transits.
+
+### Module 5b: Planet Property Derivation
+
+Given transit parameters + stellar properties from Modules 2-3:
+
+| Property | Formula | Units |
+|----------|---------|-------|
+| Planet radius | Rp = R_star * sqrt(depth) | R_earth, R_jup |
+| Orbital distance | a = (M_star)^(1/3) * (P_yr)^(2/3) | AU |
+| Equilibrium temp | T_eq = T_star * sqrt(R_star/(2a)) * (1-A)^(1/4) | K |
+| Insolation | S = L_star / a^2 | S_earth |
+| Habitable zone | inner = sqrt(L/1.107), outer = sqrt(L/0.356) | AU |
+
+Default Bond albedo: 0.3 (Earth-like).
+
+**Planet size classification** (Fulton et al. 2017):
+
+| Class | Radius range |
+|-------|-------------|
+| sub_earth | < 0.8 R_earth |
+| earth_sized | 0.8 - 1.25 R_earth |
+| super_earth | 1.25 - 2.0 R_earth |
+| sub_neptune | 2.0 - 4.0 R_earth |
+| neptune_sized | 4.0 - 6.0 R_earth |
+| sub_jupiter | 6.0 - 10.0 R_earth |
+| jupiter_sized | 10.0 - 15.0 R_earth |
+| super_jupiter | >= 15.0 R_earth |
+
+**When stellar properties are missing:** Transit detection still works (reports period, depth, duration, Rp/R_star ratio). Planet radius in physical units and orbital properties require R_star and M_star from Phase 1.
+
+**Important caveat:** All detections are transit *candidates*. Photometry alone cannot distinguish planet transits from eclipsing binaries or background eclipsing binaries. Confirmation requires follow-up observations.
+
+### Module 5 Output
+
+```json
+{
+  "transit_detected": true,
+  "transit_period_days": 3.5225,
+  "transit_depth": 0.0012,
+  "transit_depth_ppm": 1200,
+  "transit_duration_hours": 3.2,
+  "transit_sde": 15.3,
+  "n_transits_observed": 10,
+  "detection_method": "bls",
+  "planet_radius_Rearth": 2.3,
+  "planet_radius_Rjup": 0.205,
+  "planet_size_class": "sub_neptune",
+  "orbital_semi_major_axis_AU": 0.048,
+  "equilibrium_temp_K": 1250,
+  "insolation_Searth": 180.5,
+  "in_habitable_zone": false,
+  "planet_flag": "ok"
+}
+```
+
+### Usage
+
+```bash
+# Enable transit detection (auto-enables light curve retrieval)
+python run_stars.py --name "KIC 6922244" --transit
+
+# Both light curve analysis and transit detection
+python run_stars.py --name "KIC 6922244" --lightcurve --transit
+```
+
+```python
+# Library API
+from src.pipeline import process_star
+
+result = process_star(star_dict, include_transit=True, lc_target="KIC 6922244")
+```
+
+---
+
 ## Dependencies
 
 - **Python 3.9+**
@@ -556,16 +644,19 @@ result = process_star(star_dict, include_lightcurve=True, lc_target="Proxima Cen
 
 ---
 
-## Future Improvements (v3.0)
+## Future Improvements (v4.0)
 
 - Integrate `colte` library (Casagrande et al. 2021) for multi-band weighted-average T_eff with Monte Carlo uncertainties.
 - Apply the full Lindegren et al. parallax zero-point correction (function of magnitude, color, and sky position) instead of the global +0.017 mas correction.
 - Add G-to-V color transformation for more accurate Cepheid distance modulus computation.
 - Implement comparison against theoretical isochrones for more robust main-sequence classification.
-- Add BLS (Box Least Squares) periodogram for transit and eclipsing binary detection.
 - Harmonic analysis to recover fundamental periods from non-sinusoidal signals.
 - Gyrochronology: estimate stellar age from detected rotation periods.
 - Batch light curve processing for multiple stars.
+- Transit timing variations (TTV) for multi-planet system detection.
+- Limb darkening modeling for improved transit depth measurement.
+- Multi-planet detection (search for secondary signals after removing primary transit).
+- Eclipsing binary vs. planet transit discrimination heuristics.
 
 ---
 
@@ -577,5 +668,9 @@ result = process_star(star_dict, include_lightcurve=True, lc_target="Proxima Cen
 - Casagrande, L. et al. (2021). Effective temperature calibration from the InfraRed Flux Method in the Gaia system. MNRAS 507, 2684.
 - Lightkurve Collaboration (2018). Lightkurve: Kepler and TESS time series analysis in Python. ascl:1812.013.
 - Mucciarelli, A., Bellazzini, M. & Massari, D. (2021). Exploiting the Gaia EDR3 photometry to derive stellar temperatures. A&A 653, A90.
+- Fulton, B. J. et al. (2017). The California-Kepler Survey. III. A Gap in the Radius Distribution of Small Planets. AJ 154, 109.
+- Kopparapu, R. K. et al. (2013). Habitable Zones around Main-sequence Stars: New Estimates. ApJ 765, 131.
+- Kovacs, G., Zucker, S. & Mazeh, T. (2002). A box-fitting algorithm in the search for periodic transits. A&A 391, 369.
 - Riess, A. G. et al. (2022). A Comprehensive Measurement of the Local Value of the Hubble Constant. ApJ 934, L7.
 - VanderPlas, J. T. (2018). Understanding the Lomb-Scargle Periodogram. ApJS 236, 16.
+- Winn, J. N. (2010). Exoplanet Transits and Occultations. In Exoplanets, ed. S. Seager.
