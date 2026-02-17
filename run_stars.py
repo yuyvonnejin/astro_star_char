@@ -267,7 +267,11 @@ def format_result(name, result):
         t_sde = result.get("transit_sde")
         n_tr = result.get("n_transits_observed")
         lines.append(f"  {'Transit Period':20s}: {t_period:.4f} days (SDE: {t_sde}, {n_tr} transits)")
-        lines.append(f"  {'Transit Depth':20s}: {t_depth_ppm:.0f} ppm")
+        t_raw_ppm = result.get("transit_depth_raw_ppm")
+        if t_raw_ppm is not None:
+            lines.append(f"  {'Transit Depth':20s}: {t_depth_ppm:.0f} ppm (refined from {t_raw_ppm:.0f} ppm)")
+        else:
+            lines.append(f"  {'Transit Depth':20s}: {t_depth_ppm:.0f} ppm")
         lines.append(f"  {'Transit Duration':20s}: {t_dur:.2f} hours")
 
         # Planet properties

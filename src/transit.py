@@ -579,6 +579,99 @@ def remove_variability(time, flux, period, n_bins=50):
     return residual
 
 
+def refine_transit_depth(time, flux, best, others):
+    """Re-measure transit depth after masking transits from other candidates.
+
+    In multi-planet systems, BLS depth for each candidate is contaminated by
+    transits from other planets. This function masks the other candidates'
+    transits, then phase-folds at the best candidate's period to get a
+    cleaner depth measurement.
+
+    Parameters
+    ----------
+    time : ndarray
+        Time values (days).
+    flux : ndarray
+        Flux values.
+    best : dict
+        Best candidate result dict (needs transit_period_days, transit_epoch,
+        transit_duration_hours).
+    others : list of dict
+        Other candidate result dicts to mask out.
+
+    Returns
+    -------
+    float or None
+        Refined transit depth, or None if measurement failed.
+    """
+    flux_clean = flux.copy()
+    median_flux = np.median(flux_clean)
+
+    # Mask transits from other candidates (only clean ones -- flagged candidates
+    # are likely spurious and masking them corrupts the data, especially
+    # short-period false positives that can mask >30% of all data points).
+    n_masked = 0
+    n_skipped = 0
+    for cand in others:
+        # Skip flagged (spurious) candidates
+        if cand.get("transit_flag", "ok") != "ok":
+            n_skipped += 1
+            continue
+
+        period = cand.get("transit_period_days")
+        epoch = cand.get("transit_epoch")
+        duration_d = cand.get("transit_duration_hours", 0) / 24.0
+        if period is None or epoch is None or duration_d <= 0:
+            continue
+
+        # Phase relative to transit center, in days
+        phase = (time - epoch) % period
+        # Mask 1.5x the transit duration (total width), so half-width = 0.75 * duration
+        half_dur = duration_d * 0.75
+        in_transit = (phase < half_dur) | (phase > period - half_dur)
+        flux_clean[in_transit] = median_flux
+        n_masked += int(np.sum(in_transit))
+
+    logger.info("Depth refinement: masked %d points from %d clean candidates "
+                "(%d flagged skipped)",
+                n_masked, len(others) - n_skipped, n_skipped)
+
+    # Phase-fold at best candidate's period and measure depth
+    period = best["transit_period_days"]
+    epoch = best["transit_epoch"]
+    duration_d = best.get("transit_duration_hours", 0) / 24.0
+    if duration_d <= 0:
+        logger.info("Depth refinement: best candidate has no duration, skipping")
+        return None
+
+    phase = (time - epoch) % period
+    half_dur = duration_d / 2.0
+    in_transit = (phase < half_dur) | (phase > period - half_dur)
+    out_transit = ~in_transit
+
+    n_in = int(np.sum(in_transit))
+    n_out = int(np.sum(out_transit))
+
+    if n_in < 5 or n_out < 50:
+        logger.info("Depth refinement: too few points (in=%d, out=%d)", n_in, n_out)
+        return None
+
+    median_in = float(np.median(flux_clean[in_transit]))
+    median_out = float(np.median(flux_clean[out_transit]))
+    depth = median_out - median_in
+
+    logger.info("Depth refinement: in-transit median=%.6f (%d pts), "
+                "out-transit median=%.6f (%d pts), depth=%.1f ppm (was %.1f ppm)",
+                median_in, n_in, median_out, n_out,
+                depth * 1e6, best.get("transit_depth", 0) * 1e6)
+
+    if depth <= 0:
+        logger.info("Depth refinement: refined depth <= 0, keeping original")
+        return None
+
+    return depth
+
+
 def analyze_transit(lc_data, stellar_props, variability_period=None,
                     min_period=0.5, max_period=100.0, sde_threshold=6.0):
     """Full transit analysis pipeline: BLS detection + planet characterization.
@@ -661,6 +754,51 @@ def analyze_transit(lc_data, stellar_props, variability_period=None,
                         "transit_sde", "n_transits_observed", "transit_flag"):
                 if key in new_best:
                     transit_result[key] = new_best[key]
+
+        # Refine best candidate's depth by masking other candidates' transits.
+        # If refinement fails (depth=0, meaning the "transit" was an artifact
+        # of overlapping signals), try the next candidate.
+        if len(enriched_candidates) > 1:
+            refined = False
+            for try_idx in range(len(enriched_candidates)):
+                best_cand = enriched_candidates[try_idx]
+                other_cands = [c for i, c in enumerate(enriched_candidates) if i != try_idx]
+                refined_depth = refine_transit_depth(time, flux, best_cand, other_cands)
+                if refined_depth is not None:
+                    old_depth = best_cand["transit_depth"]
+                    best_cand["transit_depth_raw"] = old_depth
+                    best_cand["transit_depth_raw_ppm"] = best_cand["transit_depth_ppm"]
+                    best_cand["transit_depth"] = refined_depth
+                    best_cand["transit_depth_ppm"] = round(refined_depth * 1e6, 1)
+                    # Recompute planet properties with refined depth
+                    planet_result = compute_planet_properties(best_cand, stellar_props)
+                    # If this wasn't the original #1, promote it
+                    if try_idx > 0:
+                        logger.info("Depth refinement: candidate #%d (P=%.4f d) has no "
+                                    "independent signal; promoting #%d (P=%.4f d)",
+                                    enriched_candidates[0]["rank"],
+                                    enriched_candidates[0]["transit_period_days"],
+                                    best_cand["rank"], best_cand["transit_period_days"])
+                        enriched_candidates.insert(0, enriched_candidates.pop(try_idx))
+                        for i, c in enumerate(enriched_candidates):
+                            c["rank"] = i + 1
+                    # Update top-level transit result
+                    transit_result["transit_depth"] = refined_depth
+                    transit_result["transit_depth_ppm"] = round(refined_depth * 1e6, 1)
+                    transit_result["transit_depth_raw_ppm"] = round(old_depth * 1e6, 1)
+                    for key in ("transit_period_days", "transit_duration_hours",
+                                "transit_epoch", "transit_sde", "n_transits_observed",
+                                "transit_flag"):
+                        if key in best_cand:
+                            transit_result[key] = best_cand[key]
+                    refined = True
+                    break
+                else:
+                    logger.info("Depth refinement failed for P=%.4f d, trying next candidate",
+                                best_cand["transit_period_days"])
+            if not refined:
+                logger.info("Depth refinement: no candidate has independent transit signal")
+            transit_result["transit_candidates"] = enriched_candidates
 
         # Log all candidates for comparison
         logger.info("BLS found %d candidate(s):", len(enriched_candidates))
