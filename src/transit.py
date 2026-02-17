@@ -84,13 +84,12 @@ def detect_transit(time, flux, flux_err=None, min_period=0.5, max_period=100.0,
     else:
         bls = BoxLeastSquares(time, flux)
 
-    # Build explicit period grid: uniform in frequency (finer at short periods).
-    # 200k points is sufficient for transit detection without the 5M+ default.
-    n_freqs = 200000
-    min_freq = 1.0 / max_period
-    max_freq = 1.0 / min_period
-    freqs = np.linspace(min_freq, max_freq, n_freqs)
-    period_grid = (1.0 / freqs)[::-1]  # ascending period order
+    # Log-uniform period grid: equal density per decade of period.
+    # A frequency-uniform grid packs most points at short periods (e.g., 100k
+    # of 200k points below 1 day), biasing BLS toward spurious short-period
+    # detections. Log-uniform gives balanced sensitivity across all periods.
+    n_periods = 50000
+    period_grid = np.geomspace(min_period, max_period, n_periods)
 
     # Duration grid (max duration must be shorter than min period)
     min_dur, max_dur = duration_range
