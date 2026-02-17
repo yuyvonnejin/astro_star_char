@@ -55,7 +55,7 @@ def detect_transit(time, flux, flux_err=None, min_period=0.5, max_period=100.0,
         Transit detection results. If no significant transit is found,
         transit_detected is False.
     """
-    import lightkurve as lk
+    from astropy.timeseries import BoxLeastSquares
 
     time = np.asarray(time, dtype=float)
     flux = np.asarray(flux, dtype=float)
@@ -77,28 +77,44 @@ def detect_transit(time, flux, flux_err=None, min_period=0.5, max_period=100.0,
     logger.info("Running BLS: period range [%.2f, %.1f] days, %d points, baseline %.1f days",
                 min_period, max_period, len(time), baseline)
 
-    # Build lightkurve LightCurve object
+    # Build astropy BLS model directly (avoids lightkurve's period grid bloat)
     if flux_err is not None:
         flux_err = np.asarray(flux_err, dtype=float)
-        lc_obj = lk.LightCurve(time=time, flux=flux, flux_err=flux_err)
+        bls = BoxLeastSquares(time, flux, dy=flux_err)
     else:
-        lc_obj = lk.LightCurve(time=time, flux=flux)
+        bls = BoxLeastSquares(time, flux)
 
-    # Run BLS periodogram
-    pg = lc_obj.to_periodogram(
-        method='bls',
-        minimum_period=min_period,
-        maximum_period=max_period,
-    )
+    # Build explicit period grid: uniform in frequency (finer at short periods).
+    # 200k points is sufficient for transit detection without the 5M+ default.
+    n_freqs = 200000
+    min_freq = 1.0 / max_period
+    max_freq = 1.0 / min_period
+    freqs = np.linspace(min_freq, max_freq, n_freqs)
+    period_grid = (1.0 / freqs)[::-1]  # ascending period order
+
+    # Duration grid (max duration must be shorter than min period)
+    min_dur, max_dur = duration_range
+    max_dur = min(max_dur, min_period * 0.9)
+    durations = np.linspace(min_dur, max_dur, 20)
+
+    logger.info("BLS period grid: %d points (%.2f to %.1f days), %d durations",
+                len(period_grid), period_grid[0], period_grid[-1], len(durations))
+
+    # Run BLS
+    results = bls.power(period_grid, durations)
 
     # Extract best-fit parameters
-    best_period = float(pg.period_at_max_power.value)
-    transit_depth = float(pg.depth_at_max_power.value)
-    transit_duration = float(pg.duration_at_max_power.value)
-    transit_time = float(pg.transit_time_at_max_power.value)
+    best_idx = np.argmax(results.power)
+    best_period = float(period_grid[best_idx])
+    best_power = float(results.power[best_idx])
+    transit_depth = float(results.depth[best_idx])
+    transit_duration = float(results.duration[best_idx])
+
+    # Get transit epoch (time of first transit) via model
+    transit_time = float(results.transit_time[best_idx])
 
     # Compute SDE (Signal Detection Efficiency)
-    power = pg.power.value
+    power = results.power
     mean_power = np.mean(power)
     std_power = np.std(power)
     if std_power > 0:
