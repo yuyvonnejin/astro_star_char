@@ -227,6 +227,34 @@ def format_result(name, result):
     if ms is not None:
         lines.append(f"  {'Main sequence':20s}: {ms}")
 
+    # Module 4: Light curve results
+    if result.get("lightcurve_available") is True:
+        lines.append(f"  {'--- Light Curve ---':20s}")
+        lc_mission = result.get("lc_mission", "?")
+        lc_sectors = result.get("lc_n_sectors", "?")
+        lc_points = result.get("lc_n_points", "?")
+        lc_baseline = result.get("lc_time_baseline_days", "?")
+        lines.append(f"  {'LC Mission':20s}: {lc_mission} ({lc_sectors} sectors, {lc_points} points, {lc_baseline} d)")
+
+        var_class = result.get("variability_class", "?")
+        var_flag = result.get("variability_flag", "")
+        period = result.get("period_days")
+        fap = result.get("period_fap")
+        amplitude = result.get("amplitude_ppt")
+
+        if period is not None:
+            lines.append(f"  {'Period':20s}: {period:.4f} days (FAP: {fap:.2e})")
+            lines.append(f"  {'Amplitude':20s}: {amplitude:.2f} ppt")
+        lines.append(f"  {'Variability':20s}: {var_class} ({var_flag})")
+
+        # Cepheid distance recomputation
+        d_lc = result.get("distance_pc_lc")
+        if d_lc is not None:
+            method_lc = result.get("distance_method_lc", "?")
+            lines.append(f"  {'Distance (LC)':20s}: {d_lc:.4f} pc  ({method_lc})")
+    elif result.get("lightcurve_available") is False:
+        lines.append(f"  {'Light Curve':20s}: not available")
+
     return "\n".join(lines)
 
 
@@ -245,10 +273,12 @@ def resolve_and_query(simbad_name):
     return simbad_name, stars[0]
 
 
-def run(predefined_names=None, simbad_names=None):
+def run(predefined_names=None, simbad_names=None, include_lightcurve=False):
     """Run pipeline on predefined and/or SIMBAD-resolved stars."""
     print("=" * 60)
     print("Stellar Property Pipeline")
+    if include_lightcurve:
+        print("  (with light curve analysis)")
     print("=" * 60)
 
     results = {}
@@ -257,13 +287,25 @@ def run(predefined_names=None, simbad_names=None):
     if predefined_names is None and simbad_names is None:
         predefined_names = list(STARS.keys())
 
+    # Map predefined keys to MAST-searchable names for light curve lookup
+    PREDEFINED_LC_NAMES = {
+        "proxima_cen": "Proxima Cen",
+        "sirius_a": "Sirius",
+        "delta_cep": "Delta Cep",
+        "alpha_cen_a": "Alpha Cen A",
+        "barnards_star": "Barnard's Star",
+        # sun has no MAST light curve
+    }
+
     for name in (predefined_names or []):
         star_data = STARS.get(name)
         if star_data is None:
             logger.warning("Unknown predefined star: %s (available: %s)", name, ", ".join(STARS.keys()))
             continue
         print(f"\n--- {name} ---")
-        result = process_star(star_data)
+        lc_target = PREDEFINED_LC_NAMES.get(name) if include_lightcurve else None
+        result = process_star(star_data, include_lightcurve=include_lightcurve,
+                              lc_target=lc_target)
         results[name] = result
         print(format_result(name, result))
 
@@ -275,7 +317,10 @@ def run(predefined_names=None, simbad_names=None):
             print(f"  FAILED to resolve '{simbad_name}'")
             continue
         display_name, star_data = resolved
-        result = process_star(star_data)
+        # Use the SIMBAD name directly as the MAST search target
+        lc_target = simbad_name if include_lightcurve else None
+        result = process_star(star_data, include_lightcurve=include_lightcurve,
+                              lc_target=lc_target)
         results[display_name] = result
         print(format_result(display_name, result))
 
@@ -294,7 +339,10 @@ if __name__ == "__main__":
     parser.add_argument("predefined", nargs="*", help="Predefined star keys (e.g. sun, proxima_cen)")
     parser.add_argument("--name", nargs="+", dest="simbad_names",
                         help="SIMBAD names to resolve (e.g. Vega, 'Alp Lyr', 'HD 172167')")
+    parser.add_argument("--lightcurve", action="store_true",
+                        help="Enable Module 4: download and analyze MAST light curves")
     args = parser.parse_args()
 
     predefined = args.predefined if args.predefined else None
-    run(predefined_names=predefined, simbad_names=args.simbad_names)
+    run(predefined_names=predefined, simbad_names=args.simbad_names,
+        include_lightcurve=args.lightcurve)

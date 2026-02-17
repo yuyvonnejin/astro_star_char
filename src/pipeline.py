@@ -1,4 +1,4 @@
-"""Pipeline orchestration: chains distance -> temperature/luminosity -> mass."""
+"""Pipeline orchestration: chains distance -> temperature/luminosity -> mass -> lightcurve."""
 
 import argparse
 import json
@@ -41,18 +41,27 @@ def _apply_defaults(star_dict):
     return out
 
 
-def process_star(star_dict):
+def process_star(star_dict, include_lightcurve=False, lc_target=None,
+                 lc_mission=None, lc_max_sectors=20):
     """Run the full pipeline on a single star record.
 
     Parameters
     ----------
     star_dict : dict
         Input record matching the input schema from docs.md.
+    include_lightcurve : bool
+        If True, run Module 4 (light curve analysis via MAST).
+    lc_target : str, optional
+        Target name for MAST light curve search. If None, not searched.
+    lc_mission : str, optional
+        Force a specific mission for light curve search (TESS, Kepler, K2).
+    lc_max_sectors : int
+        Maximum sectors/quarters to download for light curve.
 
     Returns
     -------
     dict
-        Combined output from all three modules.
+        Combined output from all modules.
     """
     star = _apply_defaults(star_dict)
     source_id = star.get("source_id", "unknown")
@@ -95,7 +104,45 @@ def process_star(star_dict):
         result["mass_flag"] = "no_teff"
         result["is_main_sequence"] = None
 
+    # Module 4: Light curve analysis (optional)
+    if include_lightcurve and lc_target is not None:
+        lc_result = _run_lightcurve_analysis(lc_target, lc_mission, lc_max_sectors)
+        result.update(lc_result)
+
+        # Feed detected Cepheid period back into distance if applicable
+        if (lc_result.get("variability_class") == "periodic"
+                and lc_result.get("period_days") is not None
+                and star.get("is_cepheid")):
+            detected_period = lc_result["period_days"]
+            logger.info("Detected period %.4f d on Cepheid %s; recomputing distance",
+                        detected_period, source_id)
+            star_with_period = dict(star)
+            star_with_period["cepheid_period_days"] = detected_period
+            dist_recomputed = compute_distance(star_with_period)
+            result["distance_pc_lc"] = dist_recomputed["distance_pc"]
+            result["distance_method_lc"] = dist_recomputed.get("distance_method",
+                                                                "cepheid_leavitt")
+    elif include_lightcurve:
+        result["lightcurve_available"] = False
+        logger.info("Light curve requested but no target name provided for %s", source_id)
+
     logger.info("Finished star %s", source_id)
+    return result
+
+
+def _run_lightcurve_analysis(target, mission, max_sectors):
+    """Run Module 4 light curve analysis. Returns result dict."""
+    from src.lightcurve import retrieve_lightcurve
+    from src.periodogram import analyze_lightcurve
+
+    logger.info("Module 4: searching MAST light curves for '%s'", target)
+    lc_data = retrieve_lightcurve(target, mission=mission, max_sectors=max_sectors)
+
+    if lc_data is None:
+        logger.info("No light curve data found for '%s'", target)
+        return {"lightcurve_available": False}
+
+    result = analyze_lightcurve(lc_data)
     return result
 
 

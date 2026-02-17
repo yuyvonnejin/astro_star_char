@@ -1,4 +1,4 @@
-# Astronomy Object Property Pipeline — Spec v1.1
+# Astronomy Object Property Pipeline — Spec v2.0
 
 ## Overall Goal
 
@@ -457,22 +457,115 @@ The pipeline should be tested against these well-characterized stars:
 
 ---
 
+## Module 4: Light Curve Analysis (v2.0)
+
+Retrieves space-based time-series photometry (TESS, Kepler, K2) from MAST via lightkurve, detects periodic signals, and classifies stellar variability. This module is optional and requires network access.
+
+### Module 4a: Light Curve Retrieval
+
+**Data source:** MAST (Mikulski Archive for Space Telescopes) via the `lightkurve` Python package.
+
+| Mission | Sky coverage | Cadence | Catalog ID |
+|---------|-------------|---------|------------|
+| TESS | ~85% of sky | 2 min, 10 min, 30 min | TIC |
+| Kepler | ~116 sq deg (Cygnus-Lyra) | 1 min, 30 min | KIC |
+| K2 | ~20 fields along ecliptic | 1 min, 30 min | EPIC |
+
+**Search priority:** SPOC (TESS), then Kepler, then K2.
+
+**Steps:**
+1. Search MAST for available light curves by star name or coordinates.
+2. Download up to `max_sectors` sectors/quarters (default: 20).
+3. Stitch multi-sector data into a single time series.
+4. Remove NaN values and >5-sigma outliers.
+5. Flatten with Savitzky-Golay filter (window_length=1001 cadences) to remove spacecraft systematics.
+
+### Module 4b: Period Detection
+
+**Method:** Lomb-Scargle periodogram (astropy implementation).
+
+- Frequency range: 1/max_period to 1/min_period (default: 0.01-50 cycles/day).
+- Oversample factor: 5.
+- Maximum period capped at half the time baseline.
+- Reports: best period, normalized power at peak, False Alarm Probability (FAP).
+- Amplitude estimated from binned phase-folded light curve (peak-to-peak, parts per thousand).
+
+**Note:** Lomb-Scargle is optimized for sinusoidal signals. Non-sinusoidal signals (eclipsing binaries, transits) may produce the strongest peak at a harmonic (P/2, P/4) rather than the fundamental period. This is expected behavior.
+
+### Module 4c: Variability Classification
+
+Simple rule-based classification:
+
+| Class | Criterion |
+|-------|----------|
+| `periodic` | FAP < 0.001 |
+| `possible_periodic` | 0.001 <= FAP < 0.01 |
+| `non_variable` | FAP >= 0.01 |
+
+Quality flags: `ok`, `few_points` (n < 100), `short_baseline` (< 1 day).
+
+### Cepheid Period Feedback
+
+When Module 4 detects a significant period on a star flagged as a Cepheid (`is_cepheid=True`), the detected period is fed back into Module 1 to recompute distance via the period-luminosity relation. The recomputed distance is reported as `distance_pc_lc`.
+
+### Module 4 Output
+
+```json
+{
+  "lightcurve_available": true,
+  "lc_mission": "TESS Sector 11",
+  "lc_author": "SPOC",
+  "lc_n_sectors": 7,
+  "lc_n_points": 314004,
+  "lc_time_baseline_days": 1499.84,
+  "lc_cadence_s": 20.0,
+  "variability_class": "periodic",
+  "variability_flag": "ok",
+  "period_days": 3.5225,
+  "period_fap": 1.2e-15,
+  "amplitude_ppt": 2.5
+}
+```
+
+### Usage
+
+```bash
+# Enable light curve analysis with --lightcurve flag
+python run_stars.py proxima_cen --lightcurve
+
+# SIMBAD stars with light curve
+python run_stars.py --name "KIC 6922244" --lightcurve
+```
+
+```python
+# Library API
+from src.pipeline import process_star
+
+result = process_star(star_dict, include_lightcurve=True, lc_target="Proxima Cen")
+```
+
+---
+
 ## Dependencies
 
 - **Python 3.9+**
 - `astroquery` — Gaia TAP+ data access
 - `numpy` — Numerical computation
 - `scipy` — Posterior integration for Bayesian distance
+- `lightkurve` — MAST light curve access, stitching, flattening (v2.0)
 
 ---
 
-## Future Improvements (v2.0)
+## Future Improvements (v3.0)
 
 - Integrate `colte` library (Casagrande et al. 2021) for multi-band weighted-average T_eff with Monte Carlo uncertainties.
 - Apply the full Lindegren et al. parallax zero-point correction (function of magnitude, color, and sky position) instead of the global +0.017 mas correction.
 - Add G-to-V color transformation for more accurate Cepheid distance modulus computation.
-- Add period extraction from raw light curves via Lomb-Scargle periodogram.
 - Implement comparison against theoretical isochrones for more robust main-sequence classification.
+- Add BLS (Box Least Squares) periodogram for transit and eclipsing binary detection.
+- Harmonic analysis to recover fundamental periods from non-sinusoidal signals.
+- Gyrochronology: estimate stellar age from detected rotation periods.
+- Batch light curve processing for multiple stars.
 
 ---
 
@@ -482,5 +575,7 @@ The pipeline should be tested against these well-characterized stars:
 - Bailer-Jones, C. A. L. (2015). Estimating Distances from Parallaxes. PASP 127, 994.
 - Casagrande, L. & VandenBerg, D. A. (2018). On the use of Gaia magnitudes and new tables of bolometric corrections. MNRAS 479, L102.
 - Casagrande, L. et al. (2021). Effective temperature calibration from the InfraRed Flux Method in the Gaia system. MNRAS 507, 2684.
+- Lightkurve Collaboration (2018). Lightkurve: Kepler and TESS time series analysis in Python. ascl:1812.013.
 - Mucciarelli, A., Bellazzini, M. & Massari, D. (2021). Exploiting the Gaia EDR3 photometry to derive stellar temperatures. A&A 653, A90.
 - Riess, A. G. et al. (2022). A Comprehensive Measurement of the Local Value of the Hubble Constant. ApJ 934, L7.
+- VanderPlas, J. T. (2018). Understanding the Lomb-Scargle Periodogram. ApJS 236, 16.

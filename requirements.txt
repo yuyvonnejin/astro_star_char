@@ -2,3 +2,4 @@ numpy
 scipy
 astroquery
 pytest
+lightkurve
