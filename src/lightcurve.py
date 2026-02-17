@@ -240,9 +240,73 @@ def flatten_lightcurve(lc_data, window_length=1001):
     return out
 
 
+def bin_lightcurve(lc_data, bin_cadence_s=120.0):
+    """Bin a light curve to a coarser cadence by median-averaging.
+
+    Reduces data volume for high-cadence data (e.g., 20s TESS) before
+    expensive operations like Lomb-Scargle and BLS. Skipped if the
+    native cadence is already >= bin_cadence_s.
+
+    Parameters
+    ----------
+    lc_data : dict
+        Light curve data with time, flux, flux_err arrays.
+    bin_cadence_s : float
+        Target cadence in seconds for binning.
+
+    Returns
+    -------
+    dict
+        Binned light curve data.
+    """
+    native_cadence = lc_data.get("cadence_s", 0)
+    if native_cadence >= bin_cadence_s:
+        logger.info("Cadence %.0fs already >= %.0fs, skipping binning",
+                     native_cadence, bin_cadence_s)
+        return lc_data
+
+    time = lc_data["time"]
+    flux = lc_data["flux"]
+    flux_err = lc_data["flux_err"]
+
+    bin_width_days = bin_cadence_s / 86400.0
+    t_start = time[0]
+    t_end = time[-1]
+    n_bins = int((t_end - t_start) / bin_width_days) + 1
+
+    bin_time = []
+    bin_flux = []
+    bin_err = []
+
+    bin_edges = t_start + np.arange(n_bins + 1) * bin_width_days
+    # Use searchsorted for fast binning
+    indices = np.searchsorted(time, bin_edges)
+    for i in range(n_bins):
+        lo, hi = indices[i], indices[i + 1]
+        if hi > lo:
+            bin_time.append(np.median(time[lo:hi]))
+            bin_flux.append(np.median(flux[lo:hi]))
+            # Error of median ~ 1.253 * mean(err) / sqrt(n)
+            n = hi - lo
+            bin_err.append(1.253 * np.mean(flux_err[lo:hi]) / np.sqrt(n))
+
+    n_before = len(time)
+    n_after = len(bin_time)
+    logger.info("Binned light curve: %d -> %d points (%.0fs -> %.0fs cadence)",
+                n_before, n_after, native_cadence, bin_cadence_s)
+
+    out = dict(lc_data)
+    out["time"] = np.array(bin_time)
+    out["flux"] = np.array(bin_flux)
+    out["flux_err"] = np.array(bin_err)
+    out["n_points_clean"] = n_after
+    out["cadence_s"] = bin_cadence_s
+    return out
+
+
 def retrieve_lightcurve(target, mission=None, max_sectors=20, sigma_clip=5.0,
-                        window_length=1001):
-    """Full pipeline: search, download, clean, flatten.
+                        window_length=1001, bin_cadence_s=120.0):
+    """Full pipeline: search, download, clean, bin, flatten.
 
     Convenience function that chains all steps.
 
@@ -258,6 +322,10 @@ def retrieve_lightcurve(target, mission=None, max_sectors=20, sigma_clip=5.0,
         Outlier rejection threshold.
     window_length : int
         Flatten window length.
+    bin_cadence_s : float
+        Target cadence for binning (seconds). High-cadence data (e.g., 20s TESS)
+        is binned to this cadence before flattening and analysis. Set to 0 to
+        disable binning.
 
     Returns
     -------
@@ -274,6 +342,11 @@ def retrieve_lightcurve(target, mission=None, max_sectors=20, sigma_clip=5.0,
         return None
 
     lc_data = clean_lightcurve(lc_data, sigma_clip=sigma_clip)
+
+    # Bin high-cadence data before expensive operations (flatten, LS, BLS)
+    if bin_cadence_s > 0:
+        lc_data = bin_lightcurve(lc_data, bin_cadence_s=bin_cadence_s)
+
     lc_data = flatten_lightcurve(lc_data, window_length=window_length)
 
     return lc_data

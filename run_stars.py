@@ -371,9 +371,15 @@ def run(predefined_names=None, simbad_names=None, include_lightcurve=False,
         results[display_name] = result
         print(format_result(display_name, result))
 
-    # Save full JSON output
-    output_path = Path(__file__).resolve().parent / "output" / "results.json"
-    output_path.parent.mkdir(exist_ok=True)
+    # Save full JSON output -- filename based on star names
+    output_dir = Path(__file__).resolve().parent / "output"
+    output_dir.mkdir(exist_ok=True)
+    import re
+    star_tag = "_".join(results.keys())
+    star_tag = re.sub(r"[^\w]+", "_", star_tag).strip("_").lower()
+    if not star_tag:
+        star_tag = "results"
+    output_path = output_dir / f"results_{star_tag}.json"
     with open(output_path, "w") as f:
         json.dump(results, f, indent=2)
     logger.info("Full results saved to %s", output_path)
