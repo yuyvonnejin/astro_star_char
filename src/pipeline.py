@@ -142,7 +142,12 @@ def process_star(star_dict, include_lightcurve=False, include_transit=False,
             "teff_K": result.get("teff_K"),
             "luminosity_Lsun": result.get("luminosity_Lsun"),
         }
-        transit_result = _run_transit_analysis(lc_data, stellar_props)
+        # Pass variability period from Module 4 for pre-whitening
+        var_period = None
+        if result.get("variability_class") == "periodic" and result.get("period_days"):
+            var_period = result["period_days"]
+        transit_result = _run_transit_analysis(lc_data, stellar_props,
+                                               variability_period=var_period)
         result.update(transit_result)
     elif include_transit:
         result["transit_detected"] = None
@@ -170,12 +175,17 @@ def _run_lightcurve_analysis(target, mission, max_sectors):
     return result, lc_data
 
 
-def _run_transit_analysis(lc_data, stellar_props):
+def _run_transit_analysis(lc_data, stellar_props, variability_period=None):
     """Run Module 5 transit detection and planet characterization. Returns result dict."""
     from src.transit import analyze_transit
 
-    logger.info("Module 5: running BLS transit detection")
-    result = analyze_transit(lc_data, stellar_props)
+    if variability_period:
+        logger.info("Module 5: running BLS transit detection (pre-whitening P=%.4f d)",
+                    variability_period)
+    else:
+        logger.info("Module 5: running BLS transit detection")
+    result = analyze_transit(lc_data, stellar_props,
+                             variability_period=variability_period)
     return result
 
 

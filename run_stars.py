@@ -258,6 +258,9 @@ def format_result(name, result):
     # Module 5: Transit detection and planet properties
     if result.get("transit_detected") is True:
         lines.append(f"  {'--- Transit ---':20s}")
+        t_flag = result.get("transit_flag", "ok")
+        if t_flag != "ok":
+            lines.append(f"  {'WARNING':20s}: {t_flag}")
         t_period = result.get("transit_period_days")
         t_depth_ppm = result.get("transit_depth_ppm")
         t_dur = result.get("transit_duration_hours")
@@ -292,6 +295,10 @@ def format_result(name, result):
                 hz_inner = result.get("hz_conservative_inner_AU", "?")
                 hz_outer = result.get("hz_conservative_outer_AU", "?")
                 lines.append(f"  {'Habitable Zone':20s}: {'YES' if in_hz else 'no'} (HZ: {hz_inner}-{hz_outer} AU)")
+
+            pflag = result.get("planet_flag", "ok")
+            if pflag != "ok":
+                lines.append(f"  {'Planet WARNING':20s}: {pflag}")
         else:
             pflag = result.get("planet_flag", "?")
             lines.append(f"  {'Planet Properties':20s}: incomplete ({pflag})")

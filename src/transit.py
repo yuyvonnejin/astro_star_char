@@ -139,6 +139,28 @@ def detect_transit(time, flux, flux_err=None, min_period=0.5, max_period=100.0,
     # Transit duration in hours
     duration_hours = transit_duration * 24.0
 
+    # Sanity checks -- flag suspicious detections
+    warnings = []
+    duration_fraction = transit_duration / best_period
+    if duration_fraction > 0.15:
+        # Typical transits last 1-5% of the orbital period.
+        # >15% is physically implausible -- likely a spurious BLS fit.
+        warnings.append("duration_exceeds_15pct_of_period")
+        logger.warning("Transit duration (%.2f h) is %.0f%% of period (%.4f d) "
+                       "-- likely spurious detection",
+                       duration_hours, duration_fraction * 100, best_period)
+    if n_transits < 3:
+        warnings.append("fewer_than_3_transits")
+        logger.warning("Only %d transit(s) observed -- period poorly constrained",
+                       n_transits)
+    if transit_depth > 0.05:
+        # 5% depth = Rp/R* > 0.22 -- plausible for hot Jupiters but unusual
+        warnings.append("very_deep_transit")
+    if transit_depth < 0:
+        warnings.append("negative_depth")
+
+    transit_flag = "ok" if not warnings else "; ".join(warnings)
+
     return {
         "transit_detected": True,
         "transit_period_days": best_period,
@@ -148,6 +170,7 @@ def detect_transit(time, flux, flux_err=None, min_period=0.5, max_period=100.0,
         "transit_epoch": transit_time,
         "transit_sde": round(sde, 1),
         "n_transits_observed": n_transits,
+        "transit_flag": transit_flag,
         "detection_method": "bls",
     }
 
@@ -359,12 +382,81 @@ def compute_planet_properties(transit_result, stellar_props):
     else:
         result["in_habitable_zone"] = None
 
-    result["planet_flag"] = "ok"
+    # Planet-level sanity checks
+    warnings = []
+    R_star_AU = R_star * R_SUN_AU
+    if a_AU < R_star_AU:
+        warnings.append("orbit_inside_star")
+        logger.warning("Orbital distance %.5f AU is inside the star (R*=%.5f AU)",
+                       a_AU, R_star_AU)
+    if Rp_Rearth > R_star * R_SUN_REARTH * 0.5:
+        warnings.append("planet_larger_than_half_star")
+        logger.warning("Planet radius %.2f R_earth > 50%% of star radius -- "
+                       "likely eclipsing binary or false positive", Rp_Rearth)
+    if result.get("equilibrium_temp_K") is not None and result["equilibrium_temp_K"] > 4000:
+        warnings.append("extreme_temperature")
+
+    # Inherit transit-level warnings
+    transit_flag = transit_result.get("transit_flag", "")
+    if transit_flag and transit_flag != "ok":
+        warnings.append(transit_flag)
+
+    result["planet_flag"] = "ok" if not warnings else "; ".join(warnings)
     return result
 
 
-def analyze_transit(lc_data, stellar_props, min_period=0.5, max_period=100.0,
-                    sde_threshold=6.0):
+def remove_variability(time, flux, period, n_bins=50):
+    """Remove stellar variability by subtracting a phase-folded template.
+
+    Phase-folds the light curve at the given period, computes binned medians
+    to build a model-free template, then subtracts it. This removes starspot
+    modulation, pulsations, or other periodic variability so BLS can find
+    transit dips without confusion.
+
+    Parameters
+    ----------
+    time : array-like
+        Time values (days).
+    flux : array-like
+        Flux values.
+    period : float
+        Variability period to remove (days).
+    n_bins : int
+        Number of phase bins for the template.
+
+    Returns
+    -------
+    ndarray
+        Residual flux with variability removed (centered on 1.0).
+    """
+    phase = (time % period) / period
+    bin_edges = np.linspace(0, 1, n_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    bin_medians = np.ones(n_bins)
+
+    for i in range(n_bins):
+        in_bin = (phase >= bin_edges[i]) & (phase < bin_edges[i + 1])
+        if np.any(in_bin):
+            bin_medians[i] = np.median(flux[in_bin])
+
+    # Interpolate template at each data point's phase
+    # Wrap-around: append first bin at end for smooth interpolation
+    centers_ext = np.concatenate([bin_centers - 1, bin_centers, bin_centers + 1])
+    medians_ext = np.concatenate([bin_medians, bin_medians, bin_medians])
+    template = np.interp(phase, centers_ext, medians_ext)
+
+    # Subtract template and re-center on 1.0
+    residual = flux - template + np.median(flux)
+
+    logger.info("Removed variability at P=%.4f d (%d-bin template, "
+                "template amplitude=%.2f ppt)",
+                period, n_bins, (np.max(bin_medians) - np.min(bin_medians)) * 1000)
+
+    return residual
+
+
+def analyze_transit(lc_data, stellar_props, variability_period=None,
+                    min_period=0.5, max_period=100.0, sde_threshold=6.0):
     """Full transit analysis pipeline: BLS detection + planet characterization.
 
     This is the main entry point called from the pipeline.
@@ -375,6 +467,9 @@ def analyze_transit(lc_data, stellar_props, min_period=0.5, max_period=100.0,
         Light curve data with 'time', 'flux_flat' (or 'flux'), 'flux_err'.
     stellar_props : dict
         Stellar properties: radius_Rsun, mass_Msun, teff_K, luminosity_Lsun.
+    variability_period : float, optional
+        If set, remove this periodic variability signal before running BLS.
+        Should come from Module 4 Lomb-Scargle detection.
     min_period : float
         Minimum orbital period to search (days).
     max_period : float
@@ -391,6 +486,14 @@ def analyze_transit(lc_data, stellar_props, min_period=0.5, max_period=100.0,
     flux = lc_data.get("flux_flat", lc_data["flux"])
     flux_err = lc_data.get("flux_err")
 
+    # Pre-whiten: remove stellar variability before BLS
+    variability_removed = False
+    if variability_period is not None and variability_period > 0:
+        logger.info("Pre-whitening: removing variability at P=%.4f d before BLS",
+                    variability_period)
+        flux = remove_variability(time, flux, variability_period)
+        variability_removed = True
+
     # Run BLS
     transit_result = detect_transit(
         time, flux, flux_err,
@@ -398,6 +501,9 @@ def analyze_transit(lc_data, stellar_props, min_period=0.5, max_period=100.0,
         max_period=max_period,
         sde_threshold=sde_threshold,
     )
+
+    if variability_removed:
+        transit_result["variability_removed_period_days"] = variability_period
 
     # Derive planet properties if transit detected
     planet_result = compute_planet_properties(transit_result, stellar_props)
