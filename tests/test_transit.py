@@ -338,6 +338,34 @@ class TestDetectTransitSynthetic:
             assert "transit_sde" in result
             assert "n_transits_observed" in result
 
+    def test_candidates_list_present(self):
+        """Detection result should include transit_candidates list."""
+        time, flux, flux_err = self._make_synthetic_transit(
+            period=5.0, depth=0.01, n_points=10000, baseline=100.0
+        )
+        result = detect_transit(time, flux, flux_err, sde_threshold=5.0)
+        assert result["transit_detected"] is True
+        assert "transit_candidates" in result
+        candidates = result["transit_candidates"]
+        assert isinstance(candidates, list)
+        assert len(candidates) >= 1
+        # Best candidate should match top-level result
+        assert candidates[0]["rank"] == 1
+        assert candidates[0]["transit_period_days"] == result["transit_period_days"]
+
+    def test_candidates_span_period_range(self):
+        """Stratified extraction should produce candidates across the period range."""
+        time, flux, flux_err = self._make_synthetic_transit(
+            period=5.0, depth=0.01, n_points=10000, baseline=100.0
+        )
+        result = detect_transit(time, flux, flux_err, sde_threshold=5.0)
+        candidates = result.get("transit_candidates", [])
+        periods = [c["transit_period_days"] for c in candidates]
+        if len(periods) >= 2:
+            # Candidates should span more than a single period decade
+            p_range = max(periods) / min(periods)
+            assert p_range > 2.0, f"Candidates too clustered: range ratio {p_range:.1f}"
+
 
 # -- Network tests (require MAST access) --------------------------------------
 

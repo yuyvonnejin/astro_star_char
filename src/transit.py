@@ -29,8 +29,13 @@ R_EARTH_RJUP = 0.08921      # R_earth in Jupiter radii
 # ---------------------------------------------------------------------------
 
 def detect_transit(time, flux, flux_err=None, min_period=0.5, max_period=100.0,
-                   duration_range=(0.01, 0.5), sde_threshold=6.0):
+                   duration_range=(0.01, 0.5), sde_threshold=6.0,
+                   n_candidates=5):
     """Detect transit signals using Box Least Squares periodogram.
+
+    Extracts multiple candidate peaks from the BLS power spectrum so that
+    the true transit signal can be identified even when short-period noise
+    or systematics produce a higher peak.
 
     Parameters
     ----------
@@ -48,12 +53,14 @@ def detect_transit(time, flux, flux_err=None, min_period=0.5, max_period=100.0,
         (min_duration, max_duration) in days for transit duration grid.
     sde_threshold : float
         Minimum SDE for a detection to be considered significant.
+    n_candidates : int
+        Number of top BLS peaks to extract and report.
 
     Returns
     -------
     dict
-        Transit detection results. If no significant transit is found,
-        transit_detected is False.
+        Transit detection results for the best candidate. Includes a
+        'transit_candidates' list with all significant peaks.
     """
     from astropy.timeseries import BoxLeastSquares
 
@@ -102,71 +109,189 @@ def detect_transit(time, flux, flux_err=None, min_period=0.5, max_period=100.0,
     # Run BLS
     results = bls.power(period_grid, durations)
 
-    # Extract best-fit parameters
-    best_idx = np.argmax(results.power)
-    best_period = float(period_grid[best_idx])
-    best_power = float(results.power[best_idx])
-    transit_depth = float(results.depth[best_idx])
-    transit_duration = float(results.duration[best_idx])
+    # Compute SDE for each period (vectorized)
+    power = np.asarray(results.power, dtype=float)
+    mean_power = float(np.mean(power))
+    std_power = float(np.std(power))
 
-    # Get transit epoch (time of first transit) via model
-    transit_time = float(results.transit_time[best_idx])
-
-    # Compute SDE (Signal Detection Efficiency)
-    power = results.power
-    mean_power = np.mean(power)
-    std_power = np.std(power)
     if std_power > 0:
-        sde = float((np.max(power) - mean_power) / std_power)
+        sde_array = (power - mean_power) / std_power
     else:
-        sde = 0.0
+        sde_array = np.zeros_like(power)
 
-    logger.info("BLS result: P=%.4f d, depth=%.6f, duration=%.4f d, SDE=%.1f",
-                best_period, transit_depth, transit_duration, sde)
+    # Extract candidates: one per period decade for diversity
+    candidates = _extract_bls_candidates_stratified(
+        period_grid, power, sde_array, results, baseline=baseline,
+    )
 
-    # Check significance
-    if sde < sde_threshold:
-        logger.info("SDE %.1f below threshold %.1f -- no significant transit", sde, sde_threshold)
-        return _no_transit("low_sde", period=best_period, sde=sde)
+    # Convert all candidates to result dicts with sanity checks
+    all_results = []
+    for cand in candidates:
+        cand_result = _candidate_to_result(cand, baseline)
+        all_results.append(cand_result)
 
-    # Number of observed transits
-    n_transits = max(1, int(baseline / best_period))
+    # Filter to those above SDE threshold
+    above_thresh = [r for r in all_results if r["transit_sde"] >= sde_threshold]
 
-    # Transit depth in ppm
-    depth_ppm = transit_depth * 1e6
+    if not above_thresh:
+        best_period = float(period_grid[np.argmax(power)])
+        best_sde = float(np.max(sde_array)) if std_power > 0 else 0.0
+        logger.info("SDE %.1f below threshold %.1f -- no significant transit",
+                     best_sde, sde_threshold)
+        return _no_transit("low_sde", period=best_period, sde=round(best_sde, 1))
 
-    # Transit duration in hours
-    duration_hours = transit_duration * 24.0
+    # Select best candidate: prefer "clean" (no sanity warnings) over flagged.
+    # A physically plausible detection at lower SDE is more trustworthy than
+    # a high-SDE detection that fails basic sanity checks.
+    clean = [r for r in above_thresh if r["transit_flag"] == "ok"]
+    if clean:
+        best = max(clean, key=lambda r: r["transit_sde"])
+        logger.info("Selected clean candidate P=%.4f d (SDE=%.1f) over %d flagged candidates",
+                    best["transit_period_days"], best["transit_sde"],
+                    len(above_thresh) - len(clean))
+    else:
+        best = max(above_thresh, key=lambda r: r["transit_sde"])
 
-    # Sanity checks -- flag suspicious detections
+    # Rank: best first, then others by SDE descending
+    others = [r for r in above_thresh if r is not best]
+    others.sort(key=lambda r: r["transit_sde"], reverse=True)
+    ranked = [best] + others
+    for i, r in enumerate(ranked):
+        r["rank"] = i + 1
+
+    result = dict(best)
+    result["transit_candidates"] = ranked
+
+    return result
+
+
+def _extract_bls_candidates_stratified(period_grid, power, sde_array,
+                                        bls_results, baseline):
+    """Extract the best BLS peak from each period decade using per-bin SDE.
+
+    Divides the period range into logarithmic bins and picks the highest-
+    power peak from each bin. Uses per-bin (local) SDE so that a dominant
+    short-period systematic cannot suppress detection at longer periods.
+
+    Standard (global) SDE compares every peak to the mean/std of the full
+    power spectrum. When a massive noise peak at P~0.5d inflates the global
+    std, real transit signals at P~20d appear insignificant even though they
+    are strong relative to their local noise floor.
+
+    Parameters
+    ----------
+    period_grid : ndarray
+        Period grid values.
+    power : ndarray
+        BLS power values.
+    sde_array : ndarray
+        Global SDE values (kept for reference).
+    bls_results : BLS results object
+        Contains depth, duration, transit_time arrays.
+    baseline : float
+        Time baseline of the light curve (days).
+
+    Returns
+    -------
+    list of dict
+        Candidate peaks (one per period bin), sorted by descending local SDE.
+    """
+    p_min = period_grid[0]
+    p_max = period_grid[-1]
+
+    # Create ~5 log-spaced bins across the period range.
+    # Aim for roughly 3 bins per decade but at least 3 bins total.
+    n_decades = np.log10(p_max / p_min)
+    n_bins = max(3, int(round(n_decades * 3)))
+    bin_edges = np.geomspace(p_min, p_max * 1.001, n_bins + 1)
+
+    logger.info("Stratified BLS extraction: %d bins across [%.2f, %.1f] days",
+                n_bins, p_min, p_max)
+
+    candidates = []
+    for i in range(n_bins):
+        mask = (period_grid >= bin_edges[i]) & (period_grid < bin_edges[i + 1])
+        if not np.any(mask):
+            continue
+
+        bin_indices = np.where(mask)[0]
+        bin_power = power[bin_indices]
+
+        # Find best peak in this bin
+        local_best_pos = np.argmax(bin_power)
+        global_idx = bin_indices[local_best_pos]
+
+        # Per-bin (local) SDE: peak significance relative to local noise.
+        # This prevents a dominant short-period peak from suppressing
+        # SDE at longer periods where the real transit may live.
+        local_mean = float(np.mean(bin_power))
+        local_std = float(np.std(bin_power))
+
+        if local_std > 0:
+            local_sde = float((bin_power[local_best_pos] - local_mean) / local_std)
+        else:
+            local_sde = 0.0
+
+        global_sde = float(sde_array[global_idx])
+
+        # Skip bins where best peak is very weak even locally
+        if local_sde < 3.0:
+            logger.info("  Bin [%.2f, %.2f] d: best P=%.4f d, local_SDE=%.1f (skip)",
+                        bin_edges[i], bin_edges[i + 1],
+                        float(period_grid[global_idx]), local_sde)
+            continue
+
+        logger.info("  Bin [%.2f, %.2f] d: best P=%.4f d, local_SDE=%.1f, global_SDE=%.1f",
+                    bin_edges[i], bin_edges[i + 1],
+                    float(period_grid[global_idx]), local_sde, global_sde)
+
+        candidates.append({
+            "period": float(period_grid[global_idx]),
+            "power": float(power[global_idx]),
+            "sde": local_sde,
+            "sde_global": global_sde,
+            "depth": float(bls_results.depth[global_idx]),
+            "duration": float(bls_results.duration[global_idx]),
+            "transit_time": float(bls_results.transit_time[global_idx]),
+        })
+
+    # Sort by local SDE descending
+    candidates.sort(key=lambda c: c["sde"], reverse=True)
+    return candidates
+
+
+def _candidate_to_result(candidate, baseline):
+    """Convert a candidate dict to a transit result dict with sanity checks."""
+    period = candidate["period"]
+    depth = candidate["depth"]
+    duration = candidate["duration"]
+    sde = candidate["sde"]
+
+    n_transits = max(1, int(baseline / period))
+    depth_ppm = depth * 1e6
+    duration_hours = duration * 24.0
+
+    # Sanity checks
     warnings = []
-    duration_fraction = transit_duration / best_period
+    duration_fraction = duration / period
     if duration_fraction > 0.15:
-        # Typical transits last 1-5% of the orbital period.
-        # >15% is physically implausible -- likely a spurious BLS fit.
         warnings.append("duration_exceeds_15pct_of_period")
-        logger.warning("Transit duration (%.2f h) is %.0f%% of period (%.4f d) "
-                       "-- likely spurious detection",
-                       duration_hours, duration_fraction * 100, best_period)
     if n_transits < 3:
         warnings.append("fewer_than_3_transits")
-        logger.warning("Only %d transit(s) observed -- period poorly constrained",
-                       n_transits)
-    if transit_depth > 0.05:
-        # 5% depth = Rp/R* > 0.22 -- plausible for hot Jupiters but unusual
+    if depth > 0.05:
         warnings.append("very_deep_transit")
-    if transit_depth < 0:
+    if depth < 0:
         warnings.append("negative_depth")
 
     transit_flag = "ok" if not warnings else "; ".join(warnings)
 
     return {
         "transit_detected": True,
-        "transit_period_days": best_period,
-        "transit_depth": transit_depth,
+        "transit_period_days": period,
+        "transit_depth": depth,
         "transit_depth_ppm": round(depth_ppm, 1),
         "transit_duration_hours": round(duration_hours, 2),
-        "transit_epoch": transit_time,
+        "transit_epoch": candidate["transit_time"],
         "transit_sde": round(sde, 1),
         "n_transits_observed": n_transits,
         "transit_flag": transit_flag,
@@ -504,8 +629,29 @@ def analyze_transit(lc_data, stellar_props, variability_period=None,
     if variability_removed:
         transit_result["variability_removed_period_days"] = variability_period
 
-    # Derive planet properties if transit detected
+    # Derive planet properties for best candidate
     planet_result = compute_planet_properties(transit_result, stellar_props)
+
+    # Derive planet properties for all candidates
+    candidates = transit_result.get("transit_candidates", [])
+    if candidates:
+        enriched_candidates = []
+        for cand in candidates:
+            cand_planet = compute_planet_properties(cand, stellar_props)
+            merged = dict(cand)
+            merged.update(cand_planet)
+            enriched_candidates.append(merged)
+        transit_result["transit_candidates"] = enriched_candidates
+
+        # Log all candidates for comparison
+        logger.info("BLS found %d candidate(s):", len(enriched_candidates))
+        for cand in enriched_candidates:
+            a_au = cand.get("orbital_semi_major_axis_AU", "?")
+            insol = cand.get("insolation_Searth", "?")
+            logger.info("  #%d: P=%.4f d, SDE=%.1f, depth=%.0f ppm, a=%s AU, S=%s S_earth",
+                        cand["rank"], cand["transit_period_days"],
+                        cand["transit_sde"], cand["transit_depth_ppm"],
+                        a_au, insol)
 
     # Merge results
     result = {}
