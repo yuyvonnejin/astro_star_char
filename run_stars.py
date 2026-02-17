@@ -314,15 +314,18 @@ def format_result(name, result):
                 cd = cand.get("transit_depth_ppm", 0)
                 ca = cand.get("orbital_semi_major_axis_AU")
                 ci = cand.get("insolation_Searth")
+                ct = cand.get("equilibrium_temp_K")
                 chz = cand.get("in_habitable_zone")
                 cflag = cand.get("transit_flag", "ok")
                 flag_str = "" if cflag == "ok" else f" [{cflag}]"
                 a_str = f"{ca:.4f} AU" if ca is not None else "?"
                 i_str = f"{ci:.1f} S_e" if ci is not None else "?"
+                t_str = f"{ct:.0f}K" if ct is not None else "?"
                 hz_str = " HZ" if chz else ""
                 marker = " <-- best" if rank == 1 else ""
                 lines.append(f"    #{rank}: P={cp:.4f}d  SDE={cs:.1f}  "
-                              f"depth={cd:.0f}ppm  a={a_str}  S={i_str}{hz_str}{flag_str}{marker}")
+                              f"depth={cd:.0f}ppm  a={a_str}  T={t_str}  "
+                              f"S={i_str}{hz_str}{flag_str}{marker}")
     elif result.get("transit_detected") is False:
         tflag = result.get("transit_flag", "?")
         lines.append(f"  {'Transit':20s}: not detected ({tflag})")

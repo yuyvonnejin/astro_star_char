@@ -641,20 +641,55 @@ def analyze_transit(lc_data, stellar_props, variability_period=None,
             merged = dict(cand)
             merged.update(cand_planet)
             enriched_candidates.append(merged)
+
+        # Re-rank: among clean candidates, prefer HZ planets.
+        # Priority: (1) clean over flagged, (2) HZ over non-HZ, (3) highest SDE.
+        enriched_candidates = _rerank_candidates(enriched_candidates)
         transit_result["transit_candidates"] = enriched_candidates
+
+        # Update top-level result if re-ranking changed the best candidate
+        new_best = enriched_candidates[0]
+        if new_best["transit_period_days"] != transit_result.get("transit_period_days"):
+            logger.info("Re-ranked: promoting HZ candidate P=%.4f d over P=%.4f d",
+                        new_best["transit_period_days"],
+                        transit_result.get("transit_period_days", 0))
+            # Recompute planet result for the new best
+            planet_result = compute_planet_properties(new_best, stellar_props)
+            # Update transit-level fields from the new best
+            for key in ("transit_detected", "transit_period_days", "transit_depth",
+                        "transit_depth_ppm", "transit_duration_hours", "transit_epoch",
+                        "transit_sde", "n_transits_observed", "transit_flag"):
+                if key in new_best:
+                    transit_result[key] = new_best[key]
 
         # Log all candidates for comparison
         logger.info("BLS found %d candidate(s):", len(enriched_candidates))
         for cand in enriched_candidates:
             a_au = cand.get("orbital_semi_major_axis_AU", "?")
             insol = cand.get("insolation_Searth", "?")
-            logger.info("  #%d: P=%.4f d, SDE=%.1f, depth=%.0f ppm, a=%s AU, S=%s S_earth",
+            hz = " HZ" if cand.get("in_habitable_zone") else ""
+            logger.info("  #%d: P=%.4f d, SDE=%.1f, depth=%.0f ppm, a=%s AU, S=%s S_earth%s",
                         cand["rank"], cand["transit_period_days"],
                         cand["transit_sde"], cand["transit_depth_ppm"],
-                        a_au, insol)
+                        a_au, insol, hz)
 
     # Merge results
     result = {}
     result.update(transit_result)
     result.update(planet_result)
     return result
+
+
+def _rerank_candidates(candidates):
+    """Re-rank candidates: clean+HZ first, then clean, then flagged, by SDE within each tier."""
+    def sort_key(cand):
+        is_clean = cand.get("transit_flag", "") == "ok" or cand.get("planet_flag", "") == "ok"
+        is_hz = bool(cand.get("in_habitable_zone"))
+        sde = cand.get("transit_sde", 0)
+        # Sort descending: (clean, hz, sde) -- higher = better
+        return (is_clean, is_hz, sde)
+
+    ranked = sorted(candidates, key=sort_key, reverse=True)
+    for i, cand in enumerate(ranked):
+        cand["rank"] = i + 1
+    return ranked
