@@ -594,6 +594,10 @@ Rather than reporting only the single highest BLS peak (which is often a short-p
 
 **Why local SDE matters:** Global SDE compares every peak to the mean/std of the full power spectrum. When a dominant noise peak at P~0.5d inflates the global std, real transit signals at P~20d appear insignificant even though they are strong relative to their local noise floor. Local SDE removes this cross-contamination between period regimes.
 
+#### Period Alias Candidate Generation
+
+BLS commonly detects at harmonic aliases -- 2x or 0.5x the true orbital period. In benchmark testing, 5 of 9 matched periods were aliases, causing ~38% planet radius error. To address this, the pipeline generates **alias candidates at P/2 and 2P** for each BLS detection. Each alias is phase-folded and its transit depth measured; only aliases with positive depth and sufficient in-transit points (>= 10) are kept. Alias candidates are tagged with an `alias_of` field pointing to the parent period and flow through the full pipeline (sanity checks, planet properties, re-ranking, validation) alongside the original detections. No attempt is made to pick the "true" period -- downstream ranking and validation select the best candidate.
+
 #### Candidate Sanity Checks
 
 Each candidate undergoes automated sanity checks before ranking:

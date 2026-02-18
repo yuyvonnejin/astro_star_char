@@ -188,6 +188,23 @@ the final results.
 Clean candidates (`transit_flag="ok"`) are preferred over flagged ones, even at
 lower SDE.
 
+## Feature 10: Period Alias Candidate Generation
+
+**Purpose:** BLS commonly detects at harmonic aliases (2x or 0.5x the true period),
+causing ~38% planet radius error. Generate alias candidates at P/2 and 2P for each
+BLS detection so that downstream ranking selects the true period.
+
+**Implementation:**
+- `_measure_phase_fold_depth(time, flux, period, epoch, duration)` in `transit.py`
+- `_generate_alias_candidates(time, flux, candidates, baseline, min_period)` in `transit.py`
+- Called in `detect_transit()` after stratified extraction, before candidate conversion
+- Alias candidates tagged with `alias_of` field, flow through full pipeline
+
+**Behavior:**
+- P/2 alias generated only if >= min_period (default 0.5 days)
+- 2P alias generated only if <= baseline
+- Only aliases with positive measured depth and >= 10 in-transit points are kept
+
 ## Files Modified
 
 | File | Changes |

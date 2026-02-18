@@ -124,6 +124,10 @@ def detect_transit(time, flux, flux_err=None, min_period=0.5, max_period=100.0,
         period_grid, power, sde_array, results, baseline=baseline,
     )
 
+    # Generate period alias candidates (P/2 and 2P) for each detection
+    candidates = _generate_alias_candidates(time, flux, candidates, baseline,
+                                            min_period)
+
     # Convert all candidates to result dicts with sanity checks
     all_results = []
     for cand in candidates:
@@ -260,6 +264,107 @@ def _extract_bls_candidates_stratified(period_grid, power, sde_array,
     return candidates
 
 
+def _measure_phase_fold_depth(time, flux, period, epoch, duration):
+    """Measure transit depth by phase-folding at a given period.
+
+    Parameters
+    ----------
+    time : ndarray
+        Time values (days).
+    flux : ndarray
+        Flux values.
+    period : float
+        Orbital period to fold at (days).
+    epoch : float
+        Transit epoch (days).
+    duration : float
+        Transit duration (days).
+
+    Returns
+    -------
+    float or None
+        Measured depth (median_out - median_in), or None if insufficient points.
+    """
+    phase = (time - epoch) % period
+    half_dur = duration / 2.0
+    in_transit = (phase < half_dur) | (phase > period - half_dur)
+    out_transit = ~in_transit
+
+    n_in = int(np.sum(in_transit))
+    n_out = int(np.sum(out_transit))
+
+    if n_in < 10 or n_out < 50:
+        return None
+
+    depth = float(np.median(flux[out_transit]) - np.median(flux[in_transit]))
+    return depth
+
+
+def _generate_alias_candidates(time, flux, candidates, baseline, min_period=0.5):
+    """Generate period alias candidates at P/2 and 2P for each BLS detection.
+
+    BLS commonly detects at harmonic aliases (2x or 0.5x the true period).
+    This function generates alias candidates and measures their phase-fold
+    depth so that downstream ranking and validation can select the true period.
+
+    Parameters
+    ----------
+    time : ndarray
+        Time values (days).
+    flux : ndarray
+        Flux values.
+    candidates : list of dict
+        BLS candidates from ``_extract_bls_candidates_stratified``.
+    baseline : float
+        Time baseline of the light curve (days).
+    min_period : float
+        Minimum allowed period (days).
+
+    Returns
+    -------
+    list of dict
+        Original candidates plus any valid alias candidates (tagged with
+        ``alias_of`` pointing to the parent period).
+    """
+    alias_candidates = []
+    for cand in candidates:
+        parent_period = cand["period"]
+        epoch = cand["transit_time"]
+        duration = cand["duration"]
+
+        alias_periods = []
+        half_p = parent_period / 2.0
+        if half_p >= min_period:
+            alias_periods.append(half_p)
+        double_p = parent_period * 2.0
+        if double_p <= baseline:
+            alias_periods.append(double_p)
+
+        for alias_p in alias_periods:
+            depth = _measure_phase_fold_depth(time, flux, alias_p, epoch, duration)
+            if depth is not None and depth > 0:
+                alias_cand = {
+                    "period": alias_p,
+                    "power": cand["power"],
+                    "sde": cand["sde"],
+                    "sde_global": cand.get("sde_global", cand["sde"]),
+                    "depth": depth,
+                    "duration": duration,
+                    "transit_time": epoch,
+                    "alias_of": parent_period,
+                }
+                alias_candidates.append(alias_cand)
+                logger.info("  Alias candidate: P=%.4f d (alias of %.4f d), "
+                            "depth=%.1f ppm",
+                            alias_p, parent_period, depth * 1e6)
+
+    result = list(candidates) + alias_candidates
+    if alias_candidates:
+        logger.info("Generated %d alias candidate(s) from %d BLS detection(s)",
+                    len(alias_candidates), len(candidates))
+    return result
+
+
 def _candidate_to_result(candidate, baseline):
     """Convert a candidate dict to a transit result dict with sanity checks."""
     period = candidate["period"]
@@ -285,7 +390,7 @@ def _candidate_to_result(candidate, baseline):
 
     transit_flag = "ok" if not warnings else "; ".join(warnings)
 
-    return {
+    result = {
         "transit_detected": True,
         "transit_period_days": period,
         "transit_depth": depth,
@@ -297,6 +402,12 @@ def _candidate_to_result(candidate, baseline):
         "transit_flag": transit_flag,
         "detection_method": "bls",
     }
+
+    # Pass through alias tag if present
+    if "alias_of" in candidate:
+        result["alias_of"] = candidate["alias_of"]
+
+    return result
 
 
 def _no_transit(reason, period=None, sde=None):

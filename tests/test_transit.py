@@ -11,6 +11,8 @@ import numpy as np
 import pytest
 
 from src.transit import (
+    _generate_alias_candidates,
+    _measure_phase_fold_depth,
     classify_planet_size,
     classify_transit_shape,
     compute_equilibrium_temp,
@@ -553,6 +555,87 @@ class TestClassifyTransitShape:
         result = classify_transit_shape(time, flux, 5.0, 0.0, 0.2)
         expected_keys = {"shape_class", "flat_bottom_fraction", "n_in_transit", "shape_flag"}
         assert expected_keys.issubset(result.keys())
+
+
+class TestPeriodAliasGeneration:
+    """Test period alias candidate generation (P/2 and 2P)."""
+
+    def _make_candidate(self, period=10.0, depth=0.001, duration=0.15,
+                         sde=8.0, epoch=0.0):
+        """Create a minimal BLS candidate dict."""
+        return {
+            "period": period,
+            "power": 0.01,
+            "sde": sde,
+            "sde_global": sde,
+            "depth": depth,
+            "duration": duration,
+            "transit_time": epoch,
+        }
+
+    def _make_transit_lc(self, period=10.0, depth=0.005, duration_days=0.15,
+                          n_points=10000, baseline=100.0, noise=0.0005):
+        """Generate synthetic light curve with box transits."""
+        rng = np.random.default_rng(42)
+        time = np.sort(rng.uniform(0, baseline, n_points))
+        flux = np.ones(n_points) + rng.normal(0, noise, n_points)
+
+        phase = (time % period) / period
+        in_transit = phase < (duration_days / period)
+        flux[in_transit] -= depth
+
+        return time, flux
+
+    def test_generates_half_and_double(self):
+        """BLS candidate at P=10d should generate aliases at 5d and 20d."""
+        time, flux = self._make_transit_lc(period=10.0, baseline=100.0)
+        candidates = [self._make_candidate(period=10.0)]
+
+        result = _generate_alias_candidates(time, flux, candidates,
+                                            baseline=100.0, min_period=0.5)
+
+        alias_periods = [c["period"] for c in result if "alias_of" in c]
+        assert 5.0 in alias_periods, f"Expected P/2=5.0 in aliases, got {alias_periods}"
+        assert 20.0 in alias_periods, f"Expected 2P=20.0 in aliases, got {alias_periods}"
+
+    def test_respects_min_period(self):
+        """No alias at P/2 if it would be below min_period."""
+        time, flux = self._make_transit_lc(period=0.8, baseline=50.0)
+        candidates = [self._make_candidate(period=0.8)]
+
+        result = _generate_alias_candidates(time, flux, candidates,
+                                            baseline=50.0, min_period=0.5)
+
+        alias_periods = [c["period"] for c in result if "alias_of" in c]
+        # P/2 = 0.4 < 0.5 min_period, should not appear
+        assert 0.4 not in alias_periods, "P/2=0.4 should be excluded (below min_period)"
+
+    def test_respects_baseline(self):
+        """No alias at 2P if it would exceed the baseline."""
+        time, flux = self._make_transit_lc(period=30.0, baseline=50.0)
+        candidates = [self._make_candidate(period=30.0)]
+
+        result = _generate_alias_candidates(time, flux, candidates,
+                                            baseline=50.0, min_period=0.5)
+
+        alias_periods = [c["period"] for c in result if "alias_of" in c]
+        # 2P = 60 > 50 baseline, should not appear
+        assert 60.0 not in alias_periods, "2P=60 should be excluded (exceeds baseline)"
+
+    def test_alias_has_positive_depth(self):
+        """Only aliases with measurable positive depth are included."""
+        # Pure noise -- no real transit signal at any period
+        rng = np.random.default_rng(99)
+        time = np.sort(rng.uniform(0, 100, 10000))
+        flux = np.ones(10000) + rng.normal(0, 0.0001, 10000)
+
+        candidates = [self._make_candidate(period=10.0)]
+        result = _generate_alias_candidates(time, flux, candidates,
+                                            baseline=100.0, min_period=0.5)
+
+        for cand in result:
+            if "alias_of" in cand:
+                assert cand["depth"] > 0, "Alias candidate should have positive depth"
 
 
 # -- Network tests (require MAST access) --------------------------------------

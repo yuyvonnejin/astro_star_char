@@ -10,7 +10,7 @@ Given photometric observations from the [Gaia DR3](https://www.cosmos.esa.int/we
 2. **Temperature + Luminosity + Radius** (Module 2): Effective temperature from the dereddened (BP-RP) color index using the Mucciarelli et al. (2021) calibration, then bolometric correction, luminosity via the distance modulus, and radius via the Stefan-Boltzmann law.
 3. **Mass** (Module 3): Piecewise mass-luminosity relation for main-sequence stars.
 4. **Light Curve + Variability** (Module 4, optional): Retrieve TESS/Kepler/K2 light curves from MAST via lightkurve, detect periodic signals with Lomb-Scargle periodogram, classify variability. Cepheid periods feed back into Module 1 for improved distance.
-5. **Transit Detection + Planet Characterization** (Module 5, optional): BLS (Box Least Squares) transit search with stratified multi-candidate extraction and local SDE, quiet-star gating, optional HZ-targeted period search, pre-whitening of stellar variability, depth refinement across candidates, even/odd transit validation, and transit shape classification. Derives planet radius, orbital distance, equilibrium temperature, habitable zone status, and size classification.
+5. **Transit Detection + Planet Characterization** (Module 5, optional): BLS (Box Least Squares) transit search with stratified multi-candidate extraction and local SDE, period alias candidate generation (P/2 and 2P), quiet-star gating, optional HZ-targeted period search, pre-whitening of stellar variability, depth refinement across candidates, even/odd transit validation, and transit shape classification. Derives planet radius, orbital distance, equilibrium temperature, habitable zone status, and size classification.
 
 ```
 Gaia DR3 observation
