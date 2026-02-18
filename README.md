@@ -10,7 +10,7 @@ Given photometric observations from the [Gaia DR3](https://www.cosmos.esa.int/we
 2. **Temperature + Luminosity + Radius** (Module 2): Effective temperature from the dereddened (BP-RP) color index using the Mucciarelli et al. (2021) calibration, then bolometric correction, luminosity via the distance modulus, and radius via the Stefan-Boltzmann law.
 3. **Mass** (Module 3): Piecewise mass-luminosity relation for main-sequence stars.
 4. **Light Curve + Variability** (Module 4, optional): Retrieve TESS/Kepler/K2 light curves from MAST via lightkurve, detect periodic signals with Lomb-Scargle periodogram, classify variability. Cepheid periods feed back into Module 1 for improved distance.
-5. **Transit Detection + Planet Characterization** (Module 5, optional): BLS (Box Least Squares) transit search with multi-candidate extraction, then derive planet radius, orbital distance, equilibrium temperature, habitable zone status, and size classification.
+5. **Transit Detection + Planet Characterization** (Module 5, optional): BLS (Box Least Squares) transit search with stratified multi-candidate extraction and local SDE, quiet-star gating, optional HZ-targeted period search, pre-whitening of stellar variability, depth refinement across candidates, even/odd transit validation, and transit shape classification. Derives planet radius, orbital distance, equilibrium temperature, habitable zone status, and size classification.
 
 ```
 Gaia DR3 observation
@@ -30,7 +30,20 @@ Gaia DR3 observation
         |                     |
         |                     +---> Cepheid feedback -> recompute distance
         v
-  [BLS periodogram]  ---->  Module 5: Transit detection + Planet properties
+  [Quiet-star gate]  ---->  Skip if too variable (amplitude > 10 ppt)
+        |
+        v
+  [Pre-whiten]  ---------->  Remove stellar variability (if periodic)
+        |
+        v
+  [BLS periodogram]  ---->  Module 5a: Multi-candidate transit detection
+        |                     (stratified extraction, local SDE)
+        v
+  [Planet properties]  --->  Module 5b: Radius, orbit, T_eq, HZ status
+        |
+        v
+  [Validation]  ---------->  Module 5c: Even/odd test, shape classification,
+                              depth refinement, HZ-priority re-ranking
 ```
 
 ## Project Structure
@@ -55,9 +68,12 @@ astro_calib/
     test_periodogram.py    # Period detection + variability classification tests
     test_transit.py        # BLS detection + planet property tests
   docs/
-    detailed_pipeline_gaia_based.md   # Full technical spec (v3.0)
-    phase2_lightcurve_plan.md         # Phase 2 planning document
-    phase3_exoplanet_plan.md          # Phase 3 planning document
+    detailed_pipeline_gaia_based.md   # Full technical spec (v4.0)
+    phase2_lightcurve_plan.md         # Phase 2 planning document (light curves)
+    phase3_exoplanet_plan.md          # Phase 3 planning document (transit detection)
+    phase4_validation_plan.md         # Phase 4 planning document (validation & HZ targeting)
+    phase5_detrending_plan.md         # Phase 5 planning document (detrending improvements)
+    transit_diagnostic_guide.md       # Transit diagnostic analysis guide
     good_questions.md                 # Research direction guidance
   logs/                # Runtime logs
   output/              # Pipeline output files
@@ -206,7 +222,7 @@ Reference values come from the Gaia FLAME module (`radius_flame`, `mass_flame`, 
 .\venv\Scripts\python -m pytest tests/ -v
 ```
 
-96 tests covering all five modules: distance, temperature/luminosity/radius, mass, light curve retrieval, period detection, variability classification, BLS transit detection, planet property derivation, and integration tests against validation targets (Sun, Proxima Centauri, Sirius A, Delta Cephei). Tests requiring network access (MAST queries) are marked with `@pytest.mark.network`.
+117 tests covering all five modules: distance, temperature/luminosity/radius, mass, light curve retrieval, period detection, variability classification, BLS transit detection, multi-candidate extraction, planet property derivation, HZ period range computation, even/odd transit validation, transit shape classification, quiet-star filtering, and integration tests against validation targets (Sun, Proxima Centauri, Sirius A, Delta Cephei, KIC 6922244). Tests requiring network access (MAST queries) are marked with `@pytest.mark.network`.
 
 ## Tutorial
 

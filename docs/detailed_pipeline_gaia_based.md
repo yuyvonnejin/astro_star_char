@@ -546,20 +546,70 @@ result = process_star(star_dict, include_lightcurve=True, lc_target="Proxima Cen
 
 ---
 
-## Module 5: Transit Detection and Planet Characterization (v3.0)
+## Module 5: Transit Detection and Planet Characterization (v4.0)
 
 Uses BLS (Box Least Squares) to detect transit signals in light curves, then combines transit observables with Phase 1 stellar properties to derive physical properties of the orbiting planet.
 
+### Scientific Rationale: Focus on Quiet Sun-Like Stars
+
+Transit photometry has a fundamental signal-to-noise problem: a Jupiter-sized planet transiting a Sun-like star produces a ~1% (10,000 ppm) dip, but an Earth-sized planet produces only ~0.01% (84 ppm). Detecting shallow transits requires the host star's intrinsic variability to be well below the transit depth.
+
+The pipeline therefore adopts a **quiet-star-first strategy**:
+
+1. **Gate on variability:** Module 4 measures stellar variability amplitude. Stars with amplitude exceeding ~10 ppt (parts per thousand) are flagged `too_variable` and skipped for transit analysis. This threshold roughly corresponds to a Jupiter-transit depth around a Sun-like star -- if the star's own variability exceeds this, shallow transit detection is unreliable.
+
+2. **Focus on habitable zone:** For scientifically high-value targets, the BLS search can be narrowed to the habitable zone period range, improving sensitivity where it matters most.
+
+3. **Validate against false positives:** Eclipsing binaries (EBs) are the dominant source of transit-like false positives. The pipeline uses even/odd depth comparison, transit shape classification, and planet-level sanity checks to flag likely EBs.
+
+This approach prioritizes **reliable detections on amenable targets** over attempting to extract marginal signals from noisy data.
+
 ### Module 5a: BLS Transit Detection
 
-**Method:** BLS periodogram via lightkurve (Kovacs, Zucker & Mazeh 2002).
+**Method:** BLS periodogram via astropy `BoxLeastSquares` (Kovacs, Zucker & Mazeh 2002).
 
 BLS is purpose-built for finding periodic box-shaped dips -- exactly what transits look like. This complements Lomb-Scargle (Module 4b) which is optimized for sinusoidal signals.
 
+**Core parameters:**
 - Period range: 0.5 to 100 days (capped at half the time baseline).
-- Duration grid: determined automatically by lightkurve.
-- Significance: Signal Detection Efficiency (SDE) = (max_power - mean) / std. SDE > 6 for detection.
+- Duration grid: 20 linearly-spaced values from 0.01 to 0.5 days (capped at 0.9x min period).
+- Significance: Signal Detection Efficiency (SDE) = (max_power - mean) / std. SDE >= 6 for detection.
 - Reports: period, depth, duration, epoch, SDE, number of observed transits.
+
+#### Log-Uniform Period Grid
+
+Standard BLS implementations use a frequency-uniform period grid, which packs most points at short periods (e.g., 100k of 200k points below 1 day). This biases detection toward spurious short-period signals from spacecraft systematics.
+
+The pipeline uses a **log-uniform (geometric) period grid** of 50,000 points, giving equal density per decade of period. This provides balanced sensitivity across the full period range -- a transit at 50 days gets the same frequency resolution as one at 0.5 days.
+
+#### Stratified Multi-Candidate Extraction
+
+Rather than reporting only the single highest BLS peak (which is often a short-period systematic), the pipeline extracts **one candidate per period decade** using per-bin statistics:
+
+1. Divide the period range into ~5 logarithmic bins (3 bins per decade, minimum 3 bins total).
+2. Within each bin, find the highest-power peak.
+3. Compute **local (per-bin) SDE**: compare the peak power to the mean and std of power within that bin only.
+4. Skip bins where the local best peak has SDE < 3.0 (no significant signal in that period range).
+5. Return all surviving candidates, sorted by descending local SDE.
+
+**Why local SDE matters:** Global SDE compares every peak to the mean/std of the full power spectrum. When a dominant noise peak at P~0.5d inflates the global std, real transit signals at P~20d appear insignificant even though they are strong relative to their local noise floor. Local SDE removes this cross-contamination between period regimes.
+
+#### Candidate Sanity Checks
+
+Each candidate undergoes automated sanity checks before ranking:
+
+| Flag | Trigger | Interpretation |
+|------|---------|---------------|
+| `duration_exceeds_15pct_of_period` | Transit duration > 15% of orbital period | Geometrically implausible for planets |
+| `fewer_than_3_transits` | `floor(baseline / period) < 3` | Too few transits for reliable BLS fit |
+| `very_deep_transit` | Depth > 5% (50,000 ppm) | Likely eclipsing binary, not planet |
+| `negative_depth` | BLS returns negative depth | Non-physical; artifact |
+
+A candidate with any flag gets `transit_flag` set to the flag string(s); candidates without flags get `transit_flag="ok"`.
+
+#### Candidate Selection Logic
+
+The best candidate is selected by preferring **clean (unflagged) candidates over flagged ones**, even if the flagged candidate has higher SDE. A physically plausible detection at lower SDE is more trustworthy than a high-SDE detection that fails basic sanity checks. Among clean candidates, the highest SDE wins.
 
 ### Module 5b: Planet Property Derivation
 
@@ -588,6 +638,16 @@ Default Bond albedo: 0.3 (Earth-like).
 | jupiter_sized | 10.0 - 15.0 R_earth |
 | super_jupiter | >= 15.0 R_earth |
 
+**Planet-level sanity checks:** After deriving properties, automatic flags are raised for implausible results:
+
+| Flag | Trigger | Interpretation |
+|------|---------|---------------|
+| `orbit_inside_star` | Orbital distance (AU) < stellar radius (AU) | Non-physical orbit; period too short or stellar properties wrong |
+| `planet_larger_than_half_star` | Planet radius > 50% of stellar radius | Likely eclipsing binary, not a planet |
+| `extreme_temperature` | Equilibrium temperature > 4000 K | Planet would be destroyed at this temperature |
+
+These flags are appended to `planet_flag` alongside any inherited transit-level flags.
+
 **When stellar properties are missing:** Transit detection still works (reports period, depth, duration, Rp/R_star ratio). Planet radius in physical units and orbital properties require R_star and M_star from Phase 1.
 
 **Important caveat:** All detections are transit *candidates*. Photometry alone cannot distinguish planet transits from eclipsing binaries or background eclipsing binaries. Confirmation requires follow-up observations.
@@ -600,63 +660,28 @@ Default Bond albedo: 0.3 (Earth-like).
   "transit_period_days": 3.5225,
   "transit_depth": 0.0012,
   "transit_depth_ppm": 1200,
+  "transit_depth_raw_ppm": 1350,
   "transit_duration_hours": 3.2,
+  "transit_epoch": 2458325.123,
   "transit_sde": 15.3,
   "n_transits_observed": 10,
+  "transit_flag": "ok",
   "detection_method": "bls",
+  "variability_removed_period_days": null,
   "planet_radius_Rearth": 2.3,
   "planet_radius_Rjup": 0.205,
+  "planet_radius_ratio": 0.034641,
   "planet_size_class": "sub_neptune",
   "orbital_semi_major_axis_AU": 0.048,
+  "orbital_period_days": 3.5225,
   "equilibrium_temp_K": 1250,
   "insolation_Searth": 180.5,
+  "hz_conservative_inner_AU": 0.9505,
+  "hz_conservative_outer_AU": 1.6761,
+  "hz_optimistic_inner_AU": 0.7503,
+  "hz_optimistic_outer_AU": 1.7678,
   "in_habitable_zone": false,
-  "planet_flag": "ok"
-}
-```
-
-### Module 5c: Transit Validation & HZ-Targeted Detection (v4.0)
-
-Added in Phase 4 to improve detection reliability and false positive rejection.
-
-#### Quiet-Star Filter
-
-Gates Module 5 based on Module 4's variability amplitude. Highly variable stars drown shallow transits, so transit analysis is skipped unless forced.
-
-- **Threshold:** `max_variability_ppt=10.0` (configurable). Stars above this are flagged `too_variable`.
-- **Override:** `force_transit=True` bypasses the check.
-- **Missing data:** If amplitude is unavailable, transit analysis proceeds (conservative).
-
-#### HZ-Targeted BLS Mode
-
-Narrows the BLS period search to the habitable zone for improved sensitivity.
-
-- Computes optimistic HZ in AU from stellar luminosity, converts to period via Kepler's 3rd law.
-- Broadens by configurable factor (default 2.0x) to account for stellar property uncertainties.
-- Falls back to full [0.5, 100] day range if stellar properties are missing.
-- CLI: `--hz-only`, `--hz-broadening`
-
-#### Even/Odd Transit Validation
-
-Compares transit depths in even vs odd numbered transits. Real planets produce equal depths; eclipsing binaries often show different primary/secondary eclipse depths.
-
-- Assigns epoch numbers, splits in-transit points by even/odd.
-- Pass criterion: depth ratio within [0.5, 2.0].
-- Reports: `depth_even_ppm`, `depth_odd_ppm`, `depth_ratio_even_odd`, `even_odd_validation_pass`.
-
-#### Transit Shape Classification (V vs U)
-
-Classifies transit shape to distinguish planetary (U-shaped, flat bottom) from eclipsing binary (V-shaped, triangular) signals.
-
-- Phase-folds and bins within 1.5x transit duration.
-- Measures flat-bottom fraction (bins within 20% of minimum depth).
-- Classification: `U_shape` (>0.3), `V_shape` (<0.15), `ambiguous` (between).
-
-#### Extended Output Fields
-
-```json
-{
-  "quiet_star_skip_reason": null,
+  "planet_flag": "ok",
   "depth_even_ppm": 1180.5,
   "depth_odd_ppm": 1220.3,
   "depth_ratio_even_odd": 0.967,
@@ -664,7 +689,144 @@ Classifies transit shape to distinguish planetary (U-shaped, flat bottom) from e
   "even_odd_flag": "ok",
   "shape_class": "U_shape",
   "flat_bottom_fraction": 0.42,
-  "shape_flag": "ok"
+  "shape_flag": "ok",
+  "transit_candidates": [
+    {"rank": 1, "transit_period_days": 3.5225, "transit_sde": 15.3, "transit_depth_ppm": 1200, "planet_size_class": "sub_neptune", "in_habitable_zone": false},
+    {"rank": 2, "transit_period_days": 48.7, "transit_sde": 7.2, "transit_depth_ppm": 450, "planet_size_class": "super_earth", "in_habitable_zone": true}
+  ]
+}
+```
+
+### Module 5c: Transit Validation & HZ-Targeted Detection (v4.0)
+
+Added in Phase 4 to improve detection reliability and false positive rejection. These features work together as a layered defense: filter unsuitable stars first, focus the search, then validate the detections.
+
+#### Quiet-Star Filter (Gate)
+
+Gates Module 5 based on Module 4's variability amplitude. Highly variable stars drown shallow transits, so transit analysis is skipped unless forced.
+
+- **Threshold:** `max_variability_ppt=10.0` (configurable). Stars above this are flagged `too_variable`.
+- **Override:** `force_transit=True` bypasses the check.
+- **Missing data:** If amplitude is unavailable, transit analysis proceeds (conservative).
+- **Implementation:** `_check_quiet_star()` in `pipeline.py`.
+
+#### Pre-Whitening (Variability Removal)
+
+When Module 4 detects a significant periodic signal (e.g., starspot rotation, pulsations), the pipeline removes it before running BLS to prevent stellar variability from masking or mimicking transit signals.
+
+**Method:** Phase-folded template subtraction (`remove_variability()` in `transit.py`):
+
+1. Phase-fold the light curve at the detected variability period.
+2. Divide the phase into 50 bins and compute the median flux per bin.
+3. Interpolate the binned template at each data point's phase (with wrap-around for smooth edges).
+4. Subtract the template from the flux and re-center on the original median.
+
+This produces a residual light curve where the periodic stellar signal is removed but transit dips are preserved. The method is model-free (no assumed waveform shape), making it robust for arbitrary variability patterns.
+
+**Integration:** Only applied when `variability_class="periodic"` in Module 4 output and the detected period is available. The variability period is passed from `pipeline.py` to `analyze_transit()`.
+
+#### HZ-Targeted BLS Mode
+
+Narrows the BLS period search to the habitable zone for improved sensitivity.
+
+- Computes optimistic HZ in AU from stellar luminosity, converts to period via Kepler's 3rd law.
+- Broadens by configurable factor (default 2.0x) to account for stellar property uncertainties (~20-30%).
+- Floor at 0.5 days minimum period.
+- Falls back to full [0.5, 100] day range if stellar properties are missing.
+- CLI: `--hz-only`, `--hz-broadening`
+- **Implementation:** `compute_hz_period_range()` in `transit.py`.
+
+#### Even/Odd Transit Validation
+
+Compares transit depths in even vs odd numbered transits. Real planets produce equal depths at every epoch; eclipsing binaries often show different primary/secondary eclipse depths (the secondary eclipse is typically shallower when both stars differ in size/temperature).
+
+**Algorithm** (`validate_even_odd()` in `transit.py`):
+
+1. Assign epoch numbers to all time points: `epoch_num = round((time - epoch) / period)`.
+2. Identify in-transit points (within half the transit duration of each transit center).
+3. Compute out-of-transit baseline from median of non-transit points.
+4. Split in-transit points by even/odd epoch number.
+5. Measure median depth for even and odd groups independently.
+6. Compute depth ratio = depth_even / depth_odd.
+
+**Pass criterion:** Depth ratio within [0.5, 2.0].
+- Generous tolerance because shallow transits are noisy and small-number statistics can produce scatter.
+- EBs typically show ratios of 3-10x (very different primary vs secondary eclipse depths).
+- Requires at least 5 in-transit data points per group (even and odd).
+
+**Reports:** `depth_even_ppm`, `depth_odd_ppm`, `depth_ratio_even_odd`, `even_odd_validation_pass`, `n_even`, `n_odd`, `even_odd_flag`.
+
+#### Transit Shape Classification (V vs U)
+
+Classifies transit shape to distinguish planetary (U-shaped, flat bottom) from eclipsing binary (V-shaped, triangular) signals.
+
+**Physics:** A planet fully crossing its star produces a U-shaped transit: flat ingress, flat bottom (full occultation), flat egress. A grazing eclipsing binary produces a V-shaped (triangular) eclipse because neither star fully occults the other.
+
+**Algorithm** (`classify_transit_shape()` in `transit.py`):
+
+1. Phase-fold the light curve at the transit period.
+2. Select points within 1.5x transit duration of the transit center.
+3. Bin finely (100 bins default) within the window.
+4. Measure flat-bottom fraction: number of bins with flux within 20% of the minimum depth, divided by total valid bins.
+
+**Classification thresholds:**
+
+| Flat-bottom fraction | Classification | Interpretation |
+|---------------------|---------------|---------------|
+| > 0.3 | `U_shape` | Planet-like transit with well-defined flat bottom |
+| < 0.15 | `V_shape` | Grazing eclipsing binary or blended EB |
+| 0.15 - 0.3 | `ambiguous` | Insufficient evidence to classify |
+
+Requires at least 20 in-transit data points and 10 valid bins.
+
+#### Depth Refinement for Multi-Candidate Systems
+
+In systems with multiple transit candidates, the BLS-measured depth for each candidate is contaminated by transits from other planets overlapping in the folded light curve.
+
+**Method** (`refine_transit_depth()` in `transit.py`):
+
+1. Start with the best-ranked candidate.
+2. Mask in-transit points from all **clean** (unflagged) other candidates by replacing them with the median flux. Flagged candidates are skipped -- they are likely spurious, and masking them (especially short-period false positives) can corrupt >30% of data points.
+3. Phase-fold the masked light curve at the best candidate's period.
+4. Re-measure depth as the difference between out-of-transit median and in-transit median.
+5. If the refined depth is <= 0, the "transit" was likely an artifact of overlapping signals. Demote this candidate and try the next one.
+
+**Fallback logic:** If depth refinement fails for the top candidate (refined depth <= 0), the pipeline iterates through lower-ranked candidates. The first candidate with a positive refined depth is promoted to #1. This catches cases where the highest-SDE peak is actually an alias of another candidate's signal.
+
+**Output fields:** `transit_depth_raw_ppm` (original BLS depth) and `transit_depth_ppm` (refined depth). Planet properties are recomputed from the refined depth.
+
+#### Candidate Re-Ranking
+
+After enriching all candidates with planet properties (Module 5b), the pipeline re-ranks them by scientific priority:
+
+**Ranking tiers (highest to lowest priority):**
+1. **Clean + HZ:** Candidates with no flags AND in the habitable zone (most scientifically valuable).
+2. **Clean:** Candidates with no flags but outside the HZ.
+3. **Flagged:** Candidates with any sanity check flags.
+
+Within each tier, candidates are sorted by descending SDE. If re-ranking changes the #1 candidate, top-level transit/planet results are updated to reflect the new best.
+
+**Implementation:** `_rerank_candidates()` in `transit.py`.
+
+#### Extended Output Fields
+
+```json
+{
+  "quiet_star_skip_reason": null,
+  "variability_removed_period_days": 5.234,
+  "transit_depth_raw_ppm": 1350.0,
+  "depth_even_ppm": 1180.5,
+  "depth_odd_ppm": 1220.3,
+  "depth_ratio_even_odd": 0.967,
+  "even_odd_validation_pass": true,
+  "even_odd_flag": "ok",
+  "shape_class": "U_shape",
+  "flat_bottom_fraction": 0.42,
+  "shape_flag": "ok",
+  "transit_candidates": [
+    {"rank": 1, "transit_period_days": 3.52, "transit_sde": 15.3, "in_habitable_zone": false},
+    {"rank": 2, "transit_period_days": 48.7, "transit_sde": 7.2, "in_habitable_zone": true}
+  ]
 }
 ```
 
@@ -725,8 +887,8 @@ result = process_star(star_dict, include_transit=True, lc_target="KIC 11497958",
 - Batch light curve processing for multiple stars.
 - Transit timing variations (TTV) for multi-planet system detection.
 - Limb darkening modeling for improved transit depth measurement.
-- Multi-planet detection (search for secondary signals after removing primary transit).
-- ~~Eclipsing binary vs. planet transit discrimination heuristics.~~ (Done in v4.0: even/odd validation + transit shape classification)
+- ~~Multi-planet detection (search for secondary signals after removing primary transit).~~ (Done in v4.0: multi-candidate BLS with stratified extraction + depth refinement by masking other candidates)
+- ~~Eclipsing binary vs. planet transit discrimination heuristics.~~ (Done in v4.0: even/odd validation + transit shape classification + planet-level sanity checks)
 
 ---
 

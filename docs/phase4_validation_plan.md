@@ -10,6 +10,31 @@ Rather than fixing detrending for all stars, the smarter approach is:
 1. Focus on quiet Sun-like stars where shallow transits are detectable
 2. Add validation to distinguish real planets from false positives
 
+## Scientific Rationale: Starting with Sun-Like Stars
+
+The pipeline's transit detection strategy starts with **quiet, Sun-like stars** as
+the primary science case. This is a deliberate design choice, not a limitation:
+
+- **Signal detectability:** A Sun-like star (Teff ~5000-6000 K, amplitude < 10 ppt)
+  provides the cleanest photometric baseline for detecting shallow transit dips.
+  Earth-sized planets produce ~84 ppm transits around Sun-like stars -- detectable
+  with Kepler/TESS data, but only if the stellar noise floor is well below this.
+
+- **Habitable zone relevance:** The habitable zone around Sun-like stars (G/K dwarfs)
+  corresponds to orbital periods of ~100-600 days, well within Kepler's baseline.
+  Targeting HZ periods on quiet stars is the most efficient path to finding
+  potentially habitable planets.
+
+- **False positive rejection:** Eclipsing binaries (EBs) are the dominant contaminant
+  in transit surveys. EBs tend to be variable and have deep, V-shaped eclipses.
+  The quiet-star filter removes most EBs before BLS runs, and the validation
+  checks (even/odd depth, transit shape) catch those that remain.
+
+- **Practical scope:** Noisy stars (active M dwarfs, pulsators, spotted giants)
+  require specialized detrending techniques (Gaussian processes, pixel-level
+  decorrelation) that are beyond the current pipeline. Deferring these to Phase 5+
+  keeps the pipeline focused and reliable.
+
 ## Feature 1: Quiet-Star Filter (Gate Module 5)
 
 **Purpose:** Skip transit detection on highly variable stars where BLS cannot
@@ -78,16 +103,101 @@ ingress-egress-bottom pattern; V-shaped are triangular.
 - U-shape suggests planet with well-defined ingress/egress
 - V-shape suggests grazing eclipse or blended EB
 
+## Feature 5: Pre-Whitening (Variability Removal)
+
+**Purpose:** Remove periodic stellar variability (starspot modulation, pulsations)
+before BLS to prevent it from masking or mimicking transit signals.
+
+**Implementation:**
+- `remove_variability(time, flux, period, n_bins=50)` in `transit.py`
+- Uses model-free phase-folded template subtraction
+- The variability period comes from Module 4 Lomb-Scargle detection
+- Only applied when `variability_class="periodic"` in Module 4 output
+
+**Algorithm:**
+1. Phase-fold light curve at detected variability period
+2. Bin into 50 phase bins, compute median flux per bin
+3. Interpolate template at each data point's phase (with wrap-around)
+4. Subtract template and re-center on original median
+
+**Integration:** Called in `analyze_transit()` before BLS when `variability_period`
+is provided. Controlled by `pipeline.py` which passes the Module 4 detected period.
+
+## Feature 6: Multi-Candidate BLS with Stratified Extraction
+
+**Purpose:** Extract multiple transit candidates across different period ranges,
+preventing dominant short-period systematics from suppressing real signals at
+longer periods.
+
+**Implementation:**
+- `_extract_bls_candidates_stratified()` in `transit.py`
+- Log-uniform period grid (50,000 points) for balanced sensitivity
+- Divides period range into ~5 logarithmic bins (3 per decade, min 3)
+- Per-bin (local) SDE prevents cross-contamination between period regimes
+- Returns one candidate per period bin, sorted by descending local SDE
+
+**Key innovation -- Local SDE:** Standard global SDE compares peaks to mean/std of
+the full power spectrum. A dominant short-period noise peak inflates the global std,
+making real signals at longer periods appear insignificant. Local SDE computes
+significance within each period bin only, ensuring each period decade is evaluated
+on its own noise floor.
+
+## Feature 7: Depth Refinement for Multi-Candidate Systems
+
+**Purpose:** In multi-planet systems, BLS depth for each candidate is contaminated
+by transits from other planets. Refinement gives cleaner depth measurements.
+
+**Implementation:**
+- `refine_transit_depth(time, flux, best, others)` in `transit.py`
+- Masks in-transit points from other **clean** (unflagged) candidates
+- Phase-folds at best candidate's period, re-measures depth from medians
+- If refined depth <= 0, demotes candidate and tries next one
+- Flagged candidates are NOT masked (likely spurious; masking short-period
+  false positives can corrupt >30% of data)
+
+**Output:** `transit_depth_raw_ppm` (original BLS), `transit_depth_ppm` (refined).
+Planet properties are recomputed from the refined depth.
+
+## Feature 8: Candidate Re-Ranking with HZ Priority
+
+**Purpose:** Promote habitable zone planets over non-HZ candidates when both pass
+validation, making the "best candidate" the most scientifically interesting one.
+
+**Implementation:**
+- `_rerank_candidates()` in `transit.py`
+- Three-tier ranking: (1) clean + HZ, (2) clean + non-HZ, (3) flagged
+- Within tiers: sorted by descending SDE
+- If re-ranking changes the #1 candidate, top-level results are updated
+
+## Feature 9: Candidate Sanity Checks
+
+**Purpose:** Flag physically implausible BLS detections before they contaminate
+the final results.
+
+**Transit-level flags** (`_candidate_to_result()` in `transit.py`):
+- `duration_exceeds_15pct_of_period`: implausible transit geometry
+- `fewer_than_3_transits`: insufficient data for reliable detection
+- `very_deep_transit`: depth > 5%, likely eclipsing binary
+- `negative_depth`: non-physical BLS artifact
+
+**Planet-level flags** (`compute_planet_properties()` in `transit.py`):
+- `orbit_inside_star`: orbital distance less than stellar radius
+- `planet_larger_than_half_star`: likely eclipsing binary
+- `extreme_temperature`: T_eq > 4000 K, planet would be destroyed
+
+Clean candidates (`transit_flag="ok"`) are preferred over flagged ones, even at
+lower SDE.
+
 ## Files Modified
 
 | File | Changes |
 |------|---------|
-| `src/transit.py` | +3 functions, modify `analyze_transit` signature |
+| `src/transit.py` | +7 functions, modify `analyze_transit` signature |
 | `src/pipeline.py` | +1 function, modify `process_star` and `_run_transit_analysis` |
 | `run_stars.py` | +4 CLI args, update `run()` and `format_result()` |
 | `tests/test_transit.py` | +3 test classes (17 new tests) |
 | `tests/test_pipeline.py` | +1 test class (4 new tests) |
-| `docs/detailed_pipeline_gaia_based.md` | Add Module 5c section |
+| `docs/detailed_pipeline_gaia_based.md` | Add Module 5c section, expand Module 5a |
 
 ## Testing Strategy
 
