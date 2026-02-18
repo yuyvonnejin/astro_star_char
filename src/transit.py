@@ -124,10 +124,6 @@ def detect_transit(time, flux, flux_err=None, min_period=0.5, max_period=100.0,
         period_grid, power, sde_array, results, baseline=baseline,
     )
 
-    # Generate period alias candidates (P/2 and 2P) for each detection
-    candidates = _generate_alias_candidates(time, flux, candidates, baseline,
-                                            min_period)
-
     # Convert all candidates to result dicts with sanity checks
     all_results = []
     for cand in candidates:
