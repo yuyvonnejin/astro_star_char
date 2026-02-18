@@ -1,7 +1,7 @@
 """Integration tests: full pipeline against validation targets from spec."""
 
 import pytest
-from src.pipeline import process_star
+from src.pipeline import process_star, _check_quiet_star
 
 
 # Validation target inputs from the spec
@@ -160,3 +160,37 @@ class TestDeltaCephei:
         # logg=2.0 -> not main-sequence
         assert result["is_main_sequence"] is False
         assert result["mass_Msun"] is None
+
+
+class TestQuietStarFilter:
+    """Test the quiet-star gate for Module 5."""
+
+    def test_quiet_star_passes(self):
+        """Star with low amplitude should pass."""
+        result = {"amplitude_ppt": 2.0}
+        is_quiet, reason = _check_quiet_star(result, max_amplitude_ppt=10.0)
+        assert is_quiet is True
+        assert reason == ""
+
+    def test_variable_star_blocked(self):
+        """Star with high amplitude should be blocked."""
+        result = {"amplitude_ppt": 25.0}
+        is_quiet, reason = _check_quiet_star(result, max_amplitude_ppt=10.0)
+        assert is_quiet is False
+        assert "25.0" in reason
+
+    def test_missing_amplitude_passes(self):
+        """Star with no amplitude data should pass (conservative)."""
+        result = {}
+        is_quiet, reason = _check_quiet_star(result, max_amplitude_ppt=10.0)
+        assert is_quiet is True
+
+    def test_custom_threshold(self):
+        """Custom threshold should be respected."""
+        result = {"amplitude_ppt": 5.0}
+        # Should pass with high threshold
+        is_quiet, _ = _check_quiet_star(result, max_amplitude_ppt=10.0)
+        assert is_quiet is True
+        # Should fail with low threshold
+        is_quiet, _ = _check_quiet_star(result, max_amplitude_ppt=3.0)
+        assert is_quiet is False

@@ -372,6 +372,63 @@ def compute_habitable_zone(luminosity_Lsun):
     }
 
 
+def compute_hz_period_range(mass_Msun, luminosity_Lsun, broadening_factor=2.0):
+    """Compute the orbital period range corresponding to the habitable zone.
+
+    Converts optimistic HZ boundaries (AU) to orbital periods via Kepler's
+    3rd law, then broadens by a configurable factor to account for stellar
+    property uncertainties.
+
+    Parameters
+    ----------
+    mass_Msun : float or None
+        Stellar mass in solar masses.
+    luminosity_Lsun : float or None
+        Stellar luminosity in solar luminosities.
+    broadening_factor : float
+        Factor to broaden the period range (default 2.0).
+        Inner period is divided by this factor, outer is multiplied.
+
+    Returns
+    -------
+    tuple of (float, float) or None
+        (min_period_days, max_period_days), or None if stellar props missing.
+    """
+    if mass_Msun is None or luminosity_Lsun is None:
+        logger.info("HZ period range: missing stellar properties (M=%s, L=%s)",
+                    mass_Msun, luminosity_Lsun)
+        return None
+    if mass_Msun <= 0 or luminosity_Lsun <= 0:
+        logger.info("HZ period range: invalid stellar properties (M=%s, L=%s)",
+                    mass_Msun, luminosity_Lsun)
+        return None
+
+    hz = compute_habitable_zone(luminosity_Lsun)
+    inner_AU = hz["hz_optimistic_inner_AU"]
+    outer_AU = hz["hz_optimistic_outer_AU"]
+
+    # Kepler's 3rd law: P_years = (a_AU^3 / M_Msun)^0.5
+    inner_period_yr = math.sqrt(inner_AU ** 3 / mass_Msun)
+    outer_period_yr = math.sqrt(outer_AU ** 3 / mass_Msun)
+
+    inner_period_days = inner_period_yr * 365.25
+    outer_period_days = outer_period_yr * 365.25
+
+    # Broaden range
+    min_period = inner_period_days / broadening_factor
+    max_period = outer_period_days * broadening_factor
+
+    # Floor at 0.5 days
+    min_period = max(0.5, min_period)
+
+    logger.info("HZ period range: [%.1f, %.1f] days (HZ: %.2f-%.2f AU, "
+                "broadened %.1fx from [%.1f, %.1f] days)",
+                min_period, max_period, inner_AU, outer_AU,
+                broadening_factor, inner_period_days, outer_period_days)
+
+    return (min_period, max_period)
+
+
 def compute_equilibrium_temp(teff_K, radius_Rsun, a_AU, albedo=0.3):
     """Compute planetary equilibrium temperature.
 
@@ -672,8 +729,249 @@ def refine_transit_depth(time, flux, best, others):
     return depth
 
 
+def validate_even_odd(time, flux, period, epoch, duration_days):
+    """Validate transit by comparing even and odd transit depths.
+
+    Real planet transits produce equal depths at every epoch. Eclipsing
+    binaries often show different primary/secondary eclipse depths,
+    producing a depth ratio far from 1.0.
+
+    Parameters
+    ----------
+    time : array-like
+        Time values (days).
+    flux : array-like
+        Flux values.
+    period : float
+        Transit period (days).
+    epoch : float
+        Transit epoch (time of first transit center).
+    duration_days : float
+        Transit duration (days).
+
+    Returns
+    -------
+    dict
+        Validation results with keys: depth_even_ppm, depth_odd_ppm,
+        depth_ratio_even_odd, even_odd_validation_pass, n_even, n_odd,
+        even_odd_flag.
+    """
+    time = np.asarray(time, dtype=float)
+    flux = np.asarray(flux, dtype=float)
+
+    if period is None or period <= 0 or duration_days is None or duration_days <= 0:
+        return {
+            "depth_even_ppm": None,
+            "depth_odd_ppm": None,
+            "depth_ratio_even_odd": None,
+            "even_odd_validation_pass": None,
+            "n_even": 0,
+            "n_odd": 0,
+            "even_odd_flag": "invalid_parameters",
+        }
+
+    # Assign each data point an epoch number
+    epoch_num = np.round((time - epoch) / period).astype(int)
+
+    # Identify in-transit points: within half the duration of transit center
+    phase = (time - epoch) - epoch_num * period
+    half_dur = duration_days / 2.0
+    in_transit = np.abs(phase) < half_dur
+
+    # Compute out-of-transit baseline
+    out_transit = ~in_transit
+    if np.sum(out_transit) < 10:
+        return {
+            "depth_even_ppm": None,
+            "depth_odd_ppm": None,
+            "depth_ratio_even_odd": None,
+            "even_odd_validation_pass": None,
+            "n_even": 0,
+            "n_odd": 0,
+            "even_odd_flag": "insufficient_data",
+        }
+    baseline = float(np.median(flux[out_transit]))
+
+    # Split in-transit points by even/odd epoch
+    is_even = (epoch_num % 2) == 0
+    even_mask = in_transit & is_even
+    odd_mask = in_transit & ~is_even
+
+    n_even = int(np.sum(even_mask))
+    n_odd = int(np.sum(odd_mask))
+
+    if n_even < 5 or n_odd < 5:
+        return {
+            "depth_even_ppm": None,
+            "depth_odd_ppm": None,
+            "depth_ratio_even_odd": None,
+            "even_odd_validation_pass": None,
+            "n_even": n_even,
+            "n_odd": n_odd,
+            "even_odd_flag": "too_few_points",
+        }
+
+    depth_even = baseline - float(np.median(flux[even_mask]))
+    depth_odd = baseline - float(np.median(flux[odd_mask]))
+
+    depth_even_ppm = round(depth_even * 1e6, 1)
+    depth_odd_ppm = round(depth_odd * 1e6, 1)
+
+    # Compute ratio (avoid division by zero)
+    if depth_odd > 0 and depth_even > 0:
+        depth_ratio = depth_even / depth_odd
+    elif depth_even <= 0 and depth_odd <= 0:
+        depth_ratio = 1.0  # both non-detections
+    else:
+        depth_ratio = float('inf')
+
+    # Pass if ratio within [0.5, 2.0]
+    validation_pass = bool(0.5 <= depth_ratio <= 2.0)
+    flag = "ok" if validation_pass else "even_odd_depth_mismatch"
+
+    if not validation_pass:
+        logger.warning("Even/odd validation FAILED: depth_even=%.0f ppm, "
+                       "depth_odd=%.0f ppm, ratio=%.2f (possible eclipsing binary)",
+                       depth_even_ppm, depth_odd_ppm, depth_ratio)
+    else:
+        logger.info("Even/odd validation passed: depth_even=%.0f ppm, "
+                    "depth_odd=%.0f ppm, ratio=%.2f",
+                    depth_even_ppm, depth_odd_ppm, depth_ratio)
+
+    return {
+        "depth_even_ppm": depth_even_ppm,
+        "depth_odd_ppm": depth_odd_ppm,
+        "depth_ratio_even_odd": round(depth_ratio, 3) if depth_ratio != float('inf') else None,
+        "even_odd_validation_pass": validation_pass,
+        "n_even": n_even,
+        "n_odd": n_odd,
+        "even_odd_flag": flag,
+    }
+
+
+def classify_transit_shape(time, flux, period, epoch, duration_days,
+                           n_phase_bins=100):
+    """Classify transit shape as U-shaped (planet) or V-shaped (EB).
+
+    Phase-folds the light curve at the transit period, bins finely within
+    the transit window, and measures the flat-bottom fraction to distinguish
+    box-like (U-shaped, planet) from triangular (V-shaped, grazing EB) transits.
+
+    Parameters
+    ----------
+    time : array-like
+        Time values (days).
+    flux : array-like
+        Flux values.
+    period : float
+        Transit period (days).
+    epoch : float
+        Transit epoch (days).
+    duration_days : float
+        Transit duration (days).
+    n_phase_bins : int
+        Number of phase bins within the transit window.
+
+    Returns
+    -------
+    dict
+        Shape classification results with keys: shape_class, flat_bottom_fraction,
+        n_in_transit, shape_flag.
+    """
+    time = np.asarray(time, dtype=float)
+    flux = np.asarray(flux, dtype=float)
+
+    if (period is None or period <= 0 or duration_days is None
+            or duration_days <= 0):
+        return {
+            "shape_class": None,
+            "flat_bottom_fraction": None,
+            "n_in_transit": 0,
+            "shape_flag": "invalid_parameters",
+        }
+
+    # Phase-fold relative to transit center
+    phase = ((time - epoch) % period) / period
+    # Center on transit: shift so transit is at phase=0.5
+    phase = (phase + 0.5) % 1.0
+
+    # Select points within 1.5x transit duration of transit center (at phase=0.5)
+    dur_fraction = (duration_days * 1.5) / period
+    half_window = dur_fraction / 2.0
+    in_window = np.abs(phase - 0.5) < half_window
+
+    n_in_transit = int(np.sum(in_window))
+    if n_in_transit < 20:
+        return {
+            "shape_class": None,
+            "flat_bottom_fraction": None,
+            "n_in_transit": n_in_transit,
+            "shape_flag": "too_few_points",
+        }
+
+    window_phase = phase[in_window]
+    window_flux = flux[in_window]
+
+    # Bin the transit window
+    bin_edges = np.linspace(0.5 - half_window, 0.5 + half_window, n_phase_bins + 1)
+    bin_medians = []
+    for i in range(n_phase_bins):
+        in_bin = (window_phase >= bin_edges[i]) & (window_phase < bin_edges[i + 1])
+        if np.sum(in_bin) >= 2:
+            bin_medians.append(float(np.median(window_flux[in_bin])))
+
+    if len(bin_medians) < 10:
+        return {
+            "shape_class": None,
+            "flat_bottom_fraction": None,
+            "n_in_transit": n_in_transit,
+            "shape_flag": "too_few_bins",
+        }
+
+    bin_medians = np.array(bin_medians)
+    min_flux = np.min(bin_medians)
+    max_flux = np.max(bin_medians)
+    flux_range = max_flux - min_flux
+
+    if flux_range <= 0:
+        return {
+            "shape_class": "ambiguous",
+            "flat_bottom_fraction": 1.0,
+            "n_in_transit": n_in_transit,
+            "shape_flag": "no_depth",
+        }
+
+    # Flat-bottom fraction: bins within 20% of the depth from minimum
+    threshold = min_flux + 0.2 * flux_range
+    n_flat = int(np.sum(bin_medians <= threshold))
+    flat_fraction = n_flat / len(bin_medians)
+
+    # Classify
+    if flat_fraction > 0.3:
+        shape_class = "U_shape"
+    elif flat_fraction < 0.15:
+        shape_class = "V_shape"
+    else:
+        shape_class = "ambiguous"
+
+    flag = "ok"
+    if shape_class == "V_shape":
+        logger.warning("Transit shape is V-shaped (flat_fraction=%.2f) -- "
+                       "possible grazing eclipsing binary", flat_fraction)
+    else:
+        logger.info("Transit shape: %s (flat_fraction=%.2f)", shape_class, flat_fraction)
+
+    return {
+        "shape_class": shape_class,
+        "flat_bottom_fraction": round(flat_fraction, 3),
+        "n_in_transit": n_in_transit,
+        "shape_flag": flag,
+    }
+
+
 def analyze_transit(lc_data, stellar_props, variability_period=None,
-                    min_period=0.5, max_period=100.0, sde_threshold=6.0):
+                    min_period=0.5, max_period=100.0, sde_threshold=6.0,
+                    hz_targeted=False, hz_broadening=2.0):
     """Full transit analysis pipeline: BLS detection + planet characterization.
 
     This is the main entry point called from the pipeline.
@@ -693,6 +991,10 @@ def analyze_transit(lc_data, stellar_props, variability_period=None,
         Maximum orbital period to search (days).
     sde_threshold : float
         Minimum SDE for a detection to be considered significant.
+    hz_targeted : bool
+        If True, narrow BLS period search to the habitable zone.
+    hz_broadening : float
+        Broadening factor for HZ period range (default 2.0).
 
     Returns
     -------
@@ -702,6 +1004,19 @@ def analyze_transit(lc_data, stellar_props, variability_period=None,
     time = lc_data["time"]
     flux = lc_data.get("flux_flat", lc_data["flux"])
     flux_err = lc_data.get("flux_err")
+
+    # HZ-targeted mode: narrow period range to habitable zone
+    if hz_targeted:
+        M_star = stellar_props.get("mass_Msun")
+        L_star = stellar_props.get("luminosity_Lsun")
+        hz_range = compute_hz_period_range(M_star, L_star, broadening_factor=hz_broadening)
+        if hz_range is not None:
+            min_period = max(min_period, hz_range[0])
+            max_period = min(max_period, hz_range[1])
+            logger.info("HZ-targeted mode: narrowed period range to [%.1f, %.1f] days",
+                        min_period, max_period)
+        else:
+            logger.info("HZ-targeted mode: stellar properties missing, using full period range")
 
     # Pre-whiten: remove stellar variability before BLS
     variability_removed = False
@@ -810,6 +1125,20 @@ def analyze_transit(lc_data, stellar_props, variability_period=None,
                         cand["rank"], cand["transit_period_days"],
                         cand["transit_sde"], cand["transit_depth_ppm"],
                         a_au, insol, hz)
+
+    # Validation: even/odd transit depth and shape classification
+    if transit_result.get("transit_detected"):
+        best_period = transit_result.get("transit_period_days")
+        best_epoch = transit_result.get("transit_epoch")
+        best_dur_d = (transit_result.get("transit_duration_hours", 0) / 24.0)
+
+        even_odd_result = validate_even_odd(time, flux, best_period,
+                                            best_epoch, best_dur_d)
+        transit_result.update(even_odd_result)
+
+        shape_result = classify_transit_shape(time, flux, best_period,
+                                              best_epoch, best_dur_d)
+        transit_result.update(shape_result)
 
     # Merge results
     result = {}

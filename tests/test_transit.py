@@ -12,10 +12,13 @@ import pytest
 
 from src.transit import (
     classify_planet_size,
+    classify_transit_shape,
     compute_equilibrium_temp,
     compute_habitable_zone,
+    compute_hz_period_range,
     compute_planet_properties,
     detect_transit,
+    validate_even_odd,
     R_SUN_REARTH,
     R_SUN_AU,
     R_EARTH_RJUP,
@@ -365,6 +368,191 @@ class TestDetectTransitSynthetic:
             # Candidates should span more than a single period decade
             p_range = max(periods) / min(periods)
             assert p_range > 2.0, f"Candidates too clustered: range ratio {p_range:.1f}"
+
+
+class TestComputeHZPeriodRange:
+    """Test HZ period range computation."""
+
+    def test_sun_like_range(self):
+        """Sun-like star: HZ period range should bracket ~365 days."""
+        result = compute_hz_period_range(1.0, 1.0, broadening_factor=2.0)
+        assert result is not None
+        min_p, max_p = result
+        # Earth's period (365.25 d) should be within the range
+        assert min_p < 365.25
+        assert max_p > 365.25
+
+    def test_m_dwarf_shorter(self):
+        """M-dwarf: HZ periods should be much shorter than Sun-like."""
+        result_sun = compute_hz_period_range(1.0, 1.0)
+        result_mdwarf = compute_hz_period_range(0.12, 0.0017)
+        assert result_sun is not None
+        assert result_mdwarf is not None
+        assert result_mdwarf[1] < result_sun[0]
+
+    def test_brighter_wider(self):
+        """Brighter star should have wider (longer period) HZ."""
+        result_sun = compute_hz_period_range(1.0, 1.0, broadening_factor=1.0)
+        result_bright = compute_hz_period_range(2.0, 10.0, broadening_factor=1.0)
+        assert result_sun is not None
+        assert result_bright is not None
+        assert result_bright[1] > result_sun[1]
+
+    def test_missing_mass_returns_none(self):
+        """Missing mass should return None."""
+        assert compute_hz_period_range(None, 1.0) is None
+
+    def test_missing_luminosity_returns_none(self):
+        """Missing luminosity should return None."""
+        assert compute_hz_period_range(1.0, None) is None
+
+    def test_min_floor(self):
+        """Minimum period should be floored at 0.5 days."""
+        # Very bright, massive star -- inner HZ very close -> short period
+        result = compute_hz_period_range(1.0, 1.0, broadening_factor=1.0)
+        assert result is not None
+        assert result[0] >= 0.5
+
+    def test_no_broadening(self):
+        """With broadening_factor=1.0, range should be narrower."""
+        result_broad = compute_hz_period_range(1.0, 1.0, broadening_factor=2.0)
+        result_narrow = compute_hz_period_range(1.0, 1.0, broadening_factor=1.0)
+        assert result_broad is not None
+        assert result_narrow is not None
+        assert result_narrow[0] >= result_broad[0]
+        assert result_narrow[1] <= result_broad[1]
+
+
+class TestValidateEvenOdd:
+    """Test even/odd transit validation."""
+
+    def _make_transit_lc(self, period=5.0, depth=0.01, duration_days=0.15,
+                          n_points=10000, baseline=100.0, noise=0.0005,
+                          depth_ratio=1.0):
+        """Make synthetic LC with optional even/odd depth difference."""
+        rng = np.random.default_rng(42)
+        time = np.sort(rng.uniform(0, baseline, n_points))
+        flux = np.ones(n_points) + rng.normal(0, noise, n_points)
+
+        epoch_num = np.round(time / period).astype(int)
+        phase = time - epoch_num * period
+        in_transit = np.abs(phase) < duration_days / 2.0
+
+        is_even = (epoch_num % 2) == 0
+        flux[in_transit & is_even] -= depth
+        flux[in_transit & ~is_even] -= depth * depth_ratio
+
+        return time, flux
+
+    def test_consistent_depths_pass(self):
+        """Equal even/odd depths should pass validation."""
+        time, flux = self._make_transit_lc(depth_ratio=1.0)
+        result = validate_even_odd(time, flux, 5.0, 0.0, 0.15)
+        assert result["even_odd_validation_pass"] is True
+        assert result["even_odd_flag"] == "ok"
+
+    def test_inconsistent_depths_fail(self):
+        """Very different even/odd depths should fail (possible EB)."""
+        time, flux = self._make_transit_lc(depth=0.01, depth_ratio=5.0)
+        result = validate_even_odd(time, flux, 5.0, 0.0, 0.15)
+        assert result["even_odd_validation_pass"] is False
+        assert result["even_odd_flag"] == "even_odd_depth_mismatch"
+
+    def test_too_few_points(self):
+        """Very short data should report too few points."""
+        time = np.linspace(0, 2, 30)
+        flux = np.ones(30)
+        result = validate_even_odd(time, flux, 5.0, 0.0, 0.15)
+        assert result["even_odd_validation_pass"] is None
+        assert "too_few" in result["even_odd_flag"] or "insufficient" in result["even_odd_flag"]
+
+    def test_invalid_period(self):
+        """Invalid period should return gracefully."""
+        time = np.linspace(0, 100, 1000)
+        flux = np.ones(1000)
+        result = validate_even_odd(time, flux, 0, 0.0, 0.15)
+        assert result["even_odd_flag"] == "invalid_parameters"
+
+    def test_result_keys(self):
+        """Result should have all expected keys."""
+        time, flux = self._make_transit_lc()
+        result = validate_even_odd(time, flux, 5.0, 0.0, 0.15)
+        expected_keys = {"depth_even_ppm", "depth_odd_ppm", "depth_ratio_even_odd",
+                         "even_odd_validation_pass", "n_even", "n_odd", "even_odd_flag"}
+        assert expected_keys.issubset(result.keys())
+
+
+class TestClassifyTransitShape:
+    """Test transit shape classification (V vs U)."""
+
+    def _make_box_transit(self, period=5.0, depth=0.01, duration_days=0.2,
+                           n_points=20000, baseline=200.0, noise=0.0003):
+        """Make synthetic box transit (U-shaped)."""
+        rng = np.random.default_rng(42)
+        time = np.sort(rng.uniform(0, baseline, n_points))
+        flux = np.ones(n_points) + rng.normal(0, noise, n_points)
+
+        phase = (time % period) / period
+        in_transit = phase < (duration_days / period)
+        flux[in_transit] -= depth
+
+        return time, flux
+
+    def _make_v_transit(self, period=5.0, depth=0.01, duration_days=0.2,
+                         n_points=20000, baseline=200.0, noise=0.0003):
+        """Make synthetic V-shaped (triangular) transit."""
+        rng = np.random.default_rng(42)
+        time = np.sort(rng.uniform(0, baseline, n_points))
+        flux = np.ones(n_points) + rng.normal(0, noise, n_points)
+
+        phase = (time % period) / period
+        dur_phase = duration_days / period
+        half_dur = dur_phase / 2.0
+
+        # Triangular shape: linear ingress and egress, no flat bottom
+        in_first_half = phase < half_dur
+        in_second_half = (phase >= half_dur) & (phase < dur_phase)
+        flux[in_first_half] -= depth * (phase[in_first_half] / half_dur)
+        # Flip: going from max depth back to 0
+        flux[in_second_half] -= depth * (1.0 - (phase[in_second_half] - half_dur) / half_dur)
+
+        return time, flux
+
+    def test_u_shape_detected(self):
+        """Box transit should be classified as U-shaped."""
+        time, flux = self._make_box_transit()
+        result = classify_transit_shape(time, flux, 5.0, 0.0, 0.2)
+        assert result["shape_class"] == "U_shape"
+        assert result["shape_flag"] == "ok"
+
+    def test_v_shape_detected(self):
+        """Triangular transit should be classified as V-shaped."""
+        time, flux = self._make_v_transit()
+        result = classify_transit_shape(time, flux, 5.0, 0.0, 0.2)
+        assert result["shape_class"] == "V_shape"
+        assert result["shape_flag"] == "ok"
+
+    def test_too_few_points(self):
+        """Very few points should report too_few_points."""
+        time = np.linspace(0, 2, 15)
+        flux = np.ones(15)
+        result = classify_transit_shape(time, flux, 5.0, 0.0, 0.2)
+        assert result["shape_class"] is None
+        assert "too_few" in result["shape_flag"]
+
+    def test_invalid_params(self):
+        """Invalid period/duration should return gracefully."""
+        time = np.linspace(0, 100, 1000)
+        flux = np.ones(1000)
+        result = classify_transit_shape(time, flux, 0, 0.0, 0.2)
+        assert result["shape_flag"] == "invalid_parameters"
+
+    def test_result_keys(self):
+        """Result should have all expected keys."""
+        time, flux = self._make_box_transit()
+        result = classify_transit_shape(time, flux, 5.0, 0.0, 0.2)
+        expected_keys = {"shape_class", "flat_bottom_fraction", "n_in_transit", "shape_flag"}
+        assert expected_keys.issubset(result.keys())
 
 
 # -- Network tests (require MAST access) --------------------------------------

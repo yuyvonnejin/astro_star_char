@@ -41,8 +41,35 @@ def _apply_defaults(star_dict):
     return out
 
 
+def _check_quiet_star(result, max_amplitude_ppt=10.0):
+    """Check if a star is quiet enough for transit detection.
+
+    Parameters
+    ----------
+    result : dict
+        Pipeline result dict (must include Module 4 output).
+    max_amplitude_ppt : float
+        Maximum allowed variability amplitude in parts per thousand.
+
+    Returns
+    -------
+    tuple of (bool, str)
+        (is_quiet, reason). reason is empty string if quiet.
+    """
+    amplitude = result.get("amplitude_ppt")
+    if amplitude is None:
+        # No amplitude data -- conservative: allow transit search
+        return True, ""
+    if amplitude >= max_amplitude_ppt:
+        return False, (f"variability amplitude {amplitude:.1f} ppt "
+                       f"exceeds threshold {max_amplitude_ppt:.1f} ppt")
+    return True, ""
+
+
 def process_star(star_dict, include_lightcurve=False, include_transit=False,
-                 lc_target=None, lc_mission=None, lc_max_sectors=20):
+                 lc_target=None, lc_mission=None, lc_max_sectors=20,
+                 force_transit=False, max_variability_ppt=10.0,
+                 hz_targeted=False, hz_broadening=2.0):
     """Run the full pipeline on a single star record.
 
     Parameters
@@ -60,6 +87,14 @@ def process_star(star_dict, include_lightcurve=False, include_transit=False,
         Force a specific mission for light curve search (TESS, Kepler, K2).
     lc_max_sectors : int
         Maximum sectors/quarters to download for light curve.
+    force_transit : bool
+        If True, skip the quiet-star check and always run transit analysis.
+    max_variability_ppt : float
+        Maximum variability amplitude (ppt) to allow transit analysis.
+    hz_targeted : bool
+        If True, narrow BLS period search to the habitable zone.
+    hz_broadening : float
+        Broadening factor for HZ period range (default 2.0).
 
     Returns
     -------
@@ -136,6 +171,17 @@ def process_star(star_dict, include_lightcurve=False, include_transit=False,
 
     # Module 5: Transit detection and planet characterization (optional)
     if include_transit and lc_data is not None:
+        # Quiet-star gate: skip transit analysis if star is too variable
+        if not force_transit:
+            is_quiet, skip_reason = _check_quiet_star(result, max_variability_ppt)
+            if not is_quiet:
+                logger.info("Skipping transit analysis for %s: %s", source_id, skip_reason)
+                result["transit_detected"] = None
+                result["planet_flag"] = "too_variable"
+                result["quiet_star_skip_reason"] = skip_reason
+                logger.info("Finished star %s", source_id)
+                return result
+
         stellar_props = {
             "radius_Rsun": result.get("radius_Rsun"),
             "mass_Msun": result.get("mass_Msun"),
@@ -147,7 +193,9 @@ def process_star(star_dict, include_lightcurve=False, include_transit=False,
         if result.get("variability_class") == "periodic" and result.get("period_days"):
             var_period = result["period_days"]
         transit_result = _run_transit_analysis(lc_data, stellar_props,
-                                               variability_period=var_period)
+                                               variability_period=var_period,
+                                               hz_targeted=hz_targeted,
+                                               hz_broadening=hz_broadening)
         result.update(transit_result)
     elif include_transit:
         result["transit_detected"] = None
@@ -175,7 +223,8 @@ def _run_lightcurve_analysis(target, mission, max_sectors):
     return result, lc_data
 
 
-def _run_transit_analysis(lc_data, stellar_props, variability_period=None):
+def _run_transit_analysis(lc_data, stellar_props, variability_period=None,
+                          hz_targeted=False, hz_broadening=2.0):
     """Run Module 5 transit detection and planet characterization. Returns result dict."""
     from src.transit import analyze_transit
 
@@ -184,8 +233,12 @@ def _run_transit_analysis(lc_data, stellar_props, variability_period=None):
                     variability_period)
     else:
         logger.info("Module 5: running BLS transit detection")
+    if hz_targeted:
+        logger.info("Module 5: HZ-targeted mode enabled (broadening=%.1f)", hz_broadening)
     result = analyze_transit(lc_data, stellar_props,
-                             variability_period=variability_period)
+                             variability_period=variability_period,
+                             hz_targeted=hz_targeted,
+                             hz_broadening=hz_broadening)
     return result
 
 

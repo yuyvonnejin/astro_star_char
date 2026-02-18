@@ -333,6 +333,31 @@ def format_result(name, result):
     elif result.get("transit_detected") is False:
         tflag = result.get("transit_flag", "?")
         lines.append(f"  {'Transit':20s}: not detected ({tflag})")
+    elif result.get("planet_flag") == "too_variable":
+        skip_reason = result.get("quiet_star_skip_reason", "too variable")
+        lines.append(f"  {'Transit':20s}: skipped ({skip_reason})")
+
+    # Even/odd validation result
+    if result.get("even_odd_validation_pass") is not None:
+        eo_pass = result["even_odd_validation_pass"]
+        eo_ratio = result.get("depth_ratio_even_odd")
+        eo_even = result.get("depth_even_ppm")
+        eo_odd = result.get("depth_odd_ppm")
+        status = "PASS" if eo_pass else "FAIL"
+        if eo_ratio is not None:
+            lines.append(f"  {'Even/Odd Test':20s}: {status} (even={eo_even:.0f} ppm, "
+                          f"odd={eo_odd:.0f} ppm, ratio={eo_ratio:.2f})")
+        else:
+            lines.append(f"  {'Even/Odd Test':20s}: {status}")
+
+    # Transit shape classification
+    if result.get("shape_class") is not None:
+        shape = result["shape_class"]
+        flat_frac = result.get("flat_bottom_fraction")
+        if flat_frac is not None:
+            lines.append(f"  {'Transit Shape':20s}: {shape} (flat_fraction={flat_frac:.2f})")
+        else:
+            lines.append(f"  {'Transit Shape':20s}: {shape}")
 
     return "\n".join(lines)
 
@@ -353,7 +378,8 @@ def resolve_and_query(simbad_name):
 
 
 def run(predefined_names=None, simbad_names=None, include_lightcurve=False,
-        include_transit=False):
+        include_transit=False, force_transit=False, max_variability_ppt=10.0,
+        hz_targeted=False, hz_broadening=2.0):
     """Run pipeline on predefined and/or SIMBAD-resolved stars."""
     print("=" * 60)
     print("Stellar Property Pipeline")
@@ -361,6 +387,10 @@ def run(predefined_names=None, simbad_names=None, include_lightcurve=False,
         print("  (with light curve analysis)")
     if include_transit:
         print("  (with transit detection)")
+    if force_transit:
+        print("  (force transit: skip quiet-star check)")
+    if hz_targeted:
+        print(f"  (HZ-targeted mode, broadening={hz_broadening}x)")
     print("=" * 60)
 
     results = {}
@@ -387,7 +417,10 @@ def run(predefined_names=None, simbad_names=None, include_lightcurve=False,
         print(f"\n--- {name} ---")
         lc_target = PREDEFINED_LC_NAMES.get(name) if (include_lightcurve or include_transit) else None
         result = process_star(star_data, include_lightcurve=include_lightcurve,
-                              include_transit=include_transit, lc_target=lc_target)
+                              include_transit=include_transit, lc_target=lc_target,
+                              force_transit=force_transit,
+                              max_variability_ppt=max_variability_ppt,
+                              hz_targeted=hz_targeted, hz_broadening=hz_broadening)
         results[name] = result
         print(format_result(name, result))
 
@@ -402,7 +435,10 @@ def run(predefined_names=None, simbad_names=None, include_lightcurve=False,
         # Use the SIMBAD name directly as the MAST search target
         lc_target = simbad_name if (include_lightcurve or include_transit) else None
         result = process_star(star_data, include_lightcurve=include_lightcurve,
-                              include_transit=include_transit, lc_target=lc_target)
+                              include_transit=include_transit, lc_target=lc_target,
+                              force_transit=force_transit,
+                              max_variability_ppt=max_variability_ppt,
+                              hz_targeted=hz_targeted, hz_broadening=hz_broadening)
         results[display_name] = result
         print(format_result(display_name, result))
 
@@ -431,8 +467,19 @@ if __name__ == "__main__":
                         help="Enable Module 4: download and analyze MAST light curves")
     parser.add_argument("--transit", action="store_true",
                         help="Enable Module 5: BLS transit detection and planet characterization")
+    parser.add_argument("--force-transit", action="store_true",
+                        help="Skip quiet-star check and always run transit analysis")
+    parser.add_argument("--max-variability-ppt", type=float, default=10.0,
+                        help="Max variability amplitude (ppt) for transit analysis (default: 10.0)")
+    parser.add_argument("--hz-only", action="store_true",
+                        help="Narrow BLS period search to the habitable zone")
+    parser.add_argument("--hz-broadening", type=float, default=2.0,
+                        help="Broadening factor for HZ period range (default: 2.0)")
     args = parser.parse_args()
 
     predefined = args.predefined if args.predefined else None
     run(predefined_names=predefined, simbad_names=args.simbad_names,
-        include_lightcurve=args.lightcurve, include_transit=args.transit)
+        include_lightcurve=args.lightcurve, include_transit=args.transit,
+        force_transit=args.force_transit,
+        max_variability_ppt=args.max_variability_ppt,
+        hz_targeted=args.hz_only, hz_broadening=args.hz_broadening)

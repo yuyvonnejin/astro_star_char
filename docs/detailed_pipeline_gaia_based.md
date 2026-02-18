@@ -615,6 +615,59 @@ Default Bond albedo: 0.3 (Earth-like).
 }
 ```
 
+### Module 5c: Transit Validation & HZ-Targeted Detection (v4.0)
+
+Added in Phase 4 to improve detection reliability and false positive rejection.
+
+#### Quiet-Star Filter
+
+Gates Module 5 based on Module 4's variability amplitude. Highly variable stars drown shallow transits, so transit analysis is skipped unless forced.
+
+- **Threshold:** `max_variability_ppt=10.0` (configurable). Stars above this are flagged `too_variable`.
+- **Override:** `force_transit=True` bypasses the check.
+- **Missing data:** If amplitude is unavailable, transit analysis proceeds (conservative).
+
+#### HZ-Targeted BLS Mode
+
+Narrows the BLS period search to the habitable zone for improved sensitivity.
+
+- Computes optimistic HZ in AU from stellar luminosity, converts to period via Kepler's 3rd law.
+- Broadens by configurable factor (default 2.0x) to account for stellar property uncertainties.
+- Falls back to full [0.5, 100] day range if stellar properties are missing.
+- CLI: `--hz-only`, `--hz-broadening`
+
+#### Even/Odd Transit Validation
+
+Compares transit depths in even vs odd numbered transits. Real planets produce equal depths; eclipsing binaries often show different primary/secondary eclipse depths.
+
+- Assigns epoch numbers, splits in-transit points by even/odd.
+- Pass criterion: depth ratio within [0.5, 2.0].
+- Reports: `depth_even_ppm`, `depth_odd_ppm`, `depth_ratio_even_odd`, `even_odd_validation_pass`.
+
+#### Transit Shape Classification (V vs U)
+
+Classifies transit shape to distinguish planetary (U-shaped, flat bottom) from eclipsing binary (V-shaped, triangular) signals.
+
+- Phase-folds and bins within 1.5x transit duration.
+- Measures flat-bottom fraction (bins within 20% of minimum depth).
+- Classification: `U_shape` (>0.3), `V_shape` (<0.15), `ambiguous` (between).
+
+#### Extended Output Fields
+
+```json
+{
+  "quiet_star_skip_reason": null,
+  "depth_even_ppm": 1180.5,
+  "depth_odd_ppm": 1220.3,
+  "depth_ratio_even_odd": 0.967,
+  "even_odd_validation_pass": true,
+  "even_odd_flag": "ok",
+  "shape_class": "U_shape",
+  "flat_bottom_fraction": 0.42,
+  "shape_flag": "ok"
+}
+```
+
 ### Usage
 
 ```bash
@@ -623,6 +676,15 @@ python run_stars.py --name "KIC 6922244" --transit
 
 # Both light curve analysis and transit detection
 python run_stars.py --name "KIC 6922244" --lightcurve --transit
+
+# HZ-targeted transit detection
+python run_stars.py --name "KIC 6922244" --transit --hz-only
+
+# Force transit analysis on variable stars
+python run_stars.py --name "KIC 11497958" --transit --force-transit
+
+# Custom variability threshold
+python run_stars.py --name "KIC 6922244" --transit --max-variability-ppt 20.0
 ```
 
 ```python
@@ -630,6 +692,14 @@ python run_stars.py --name "KIC 6922244" --lightcurve --transit
 from src.pipeline import process_star
 
 result = process_star(star_dict, include_transit=True, lc_target="KIC 6922244")
+
+# HZ-targeted mode
+result = process_star(star_dict, include_transit=True, lc_target="KIC 6922244",
+                      hz_targeted=True, hz_broadening=2.0)
+
+# Force transit on variable star
+result = process_star(star_dict, include_transit=True, lc_target="KIC 11497958",
+                      force_transit=True)
 ```
 
 ---
@@ -644,7 +714,7 @@ result = process_star(star_dict, include_transit=True, lc_target="KIC 6922244")
 
 ---
 
-## Future Improvements (v4.0)
+## Future Improvements (v5.0)
 
 - Integrate `colte` library (Casagrande et al. 2021) for multi-band weighted-average T_eff with Monte Carlo uncertainties.
 - Apply the full Lindegren et al. parallax zero-point correction (function of magnitude, color, and sky position) instead of the global +0.017 mas correction.
@@ -656,7 +726,7 @@ result = process_star(star_dict, include_transit=True, lc_target="KIC 6922244")
 - Transit timing variations (TTV) for multi-planet system detection.
 - Limb darkening modeling for improved transit depth measurement.
 - Multi-planet detection (search for secondary signals after removing primary transit).
-- Eclipsing binary vs. planet transit discrimination heuristics.
+- ~~Eclipsing binary vs. planet transit discrimination heuristics.~~ (Done in v4.0: even/odd validation + transit shape classification)
 
 ---
 
