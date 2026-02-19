@@ -57,7 +57,7 @@ def query_known_planets(star_name):
 
         logger.info("Querying NASA Exoplanet Archive for planets around '%s'", search_name)
         try:
-            response = requests.get(NASA_EXOPLANET_TAP, params=params, timeout=30)
+            response = requests.get(NASA_EXOPLANET_TAP, params=params, timeout=20)
             response.raise_for_status()
             data = response.json()
 
@@ -167,7 +167,7 @@ def query_nasa_rv_data(star_name):
 
         logger.info("Querying NASA for RV orbital solutions for '%s'", search_name)
         try:
-            response = requests.get(NASA_EXOPLANET_TAP, params=params, timeout=30)
+            response = requests.get(NASA_EXOPLANET_TAP, params=params, timeout=20)
             response.raise_for_status()
             data = response.json()
 
@@ -346,6 +346,340 @@ def rv_detection_limit(time, rv_err, period_grid=None):
     }
 
 
+def rv_subtract_instrument_offsets(time, rv, rv_err, instruments):
+    """Subtract per-instrument median RV offsets to align zero-points.
+
+    Different spectrographs (CORAVEL, HARPS, ESPRESSO) have different absolute
+    velocity zero-points. This function subtracts the median RV per instrument
+    so all instruments share a common baseline.
+
+    Parameters
+    ----------
+    time : array-like
+        BJD timestamps.
+    rv : array-like
+        Radial velocities (m/s).
+    rv_err : array-like
+        RV uncertainties (m/s).
+    instruments : list[str]
+        Instrument name per measurement.
+
+    Returns
+    -------
+    dict
+        Corrected data with keys: time, rv, rv_err, instruments,
+        offsets (dict of instrument -> offset in m/s), n_instruments.
+    """
+    time = np.asarray(time, dtype=float)
+    rv = np.asarray(rv, dtype=float)
+    rv_err = np.asarray(rv_err, dtype=float)
+    instruments = list(instruments)
+
+    unique_inst = sorted(set(instruments))
+    inst_arr = np.array(instruments)
+    rv_corrected = rv.copy()
+    offsets = {}
+
+    for inst in unique_inst:
+        mask = inst_arr == inst
+        median_rv = float(np.median(rv[mask]))
+        rv_corrected[mask] -= median_rv
+        offsets[inst] = round(median_rv, 4)
+        logger.info("Instrument offset %s: %.4f m/s (%d measurements)",
+                     inst, median_rv, int(np.sum(mask)))
+
+    return {
+        "time": time,
+        "rv": rv_corrected,
+        "rv_err": rv_err,
+        "instruments": instruments,
+        "offsets": offsets,
+        "n_instruments": len(unique_inst),
+    }
+
+
+def rv_subtract_sinusoids(time, rv, periods, fit_amplitudes=True):
+    """Fit and subtract sinusoidal models at specified periods.
+
+    For each period, fits A*sin(2*pi*t/P) + B*cos(2*pi*t/P) via linear
+    least squares (equivalent to fitting amplitude and phase). Subtracts
+    the combined model from the RV data to produce residuals.
+
+    Parameters
+    ----------
+    time : array-like
+        BJD timestamps.
+    rv : array-like
+        Radial velocities (m/s), ideally offset-corrected.
+    periods : list[float]
+        Orbital periods (days) to subtract (e.g., known planet periods).
+    fit_amplitudes : bool
+        If True, fit amplitude and phase for each period. If False, just
+        subtract unit-amplitude sinusoids (for testing).
+
+    Returns
+    -------
+    dict
+        Results with keys: residuals (array), model (array),
+        fitted_components (list of dicts with period, amplitude_ms, phase_rad),
+        rms_before_ms, rms_after_ms.
+    """
+    time = np.asarray(time, dtype=float)
+    rv = np.asarray(rv, dtype=float)
+    periods = [float(p) for p in periods]
+
+    if not periods:
+        return {
+            "residuals": rv.copy(),
+            "model": np.zeros_like(rv),
+            "fitted_components": [],
+            "rms_before_ms": round(float(np.std(rv)), 4),
+            "rms_after_ms": round(float(np.std(rv)), 4),
+        }
+
+    rms_before = float(np.std(rv))
+
+    if fit_amplitudes:
+        # Build design matrix: for each period, sin and cos columns
+        n = len(time)
+        n_periods = len(periods)
+        design = np.zeros((n, 2 * n_periods + 1))
+        design[:, 0] = 1.0  # constant offset
+
+        for i, period in enumerate(periods):
+            phase = 2.0 * np.pi * time / period
+            design[:, 2 * i + 1] = np.sin(phase)
+            design[:, 2 * i + 2] = np.cos(phase)
+
+        # Least squares fit
+        coeffs, _, _, _ = np.linalg.lstsq(design, rv, rcond=None)
+
+        model = design @ coeffs
+        residuals = rv - model
+
+        # Extract fitted components
+        fitted_components = []
+        for i, period in enumerate(periods):
+            a = coeffs[2 * i + 1]
+            b = coeffs[2 * i + 2]
+            amplitude = float(np.sqrt(a**2 + b**2))
+            phase = float(np.arctan2(b, a))
+            fitted_components.append({
+                "period_days": period,
+                "amplitude_ms": round(amplitude, 4),
+                "phase_rad": round(phase, 4),
+            })
+            logger.info("Subtracted sinusoid: P=%.2f d, K=%.4f m/s", period, amplitude)
+    else:
+        model = np.zeros_like(rv)
+        fitted_components = []
+        for period in periods:
+            phase = 2.0 * np.pi * time / period
+            component = np.sin(phase)
+            model += component
+            fitted_components.append({
+                "period_days": period,
+                "amplitude_ms": 1.0,
+                "phase_rad": 0.0,
+            })
+        residuals = rv - model
+
+    rms_after = float(np.std(residuals))
+    logger.info("RV sinusoid subtraction: RMS %.4f -> %.4f m/s (%d periods removed)",
+                rms_before, rms_after, len(periods))
+
+    return {
+        "residuals": residuals,
+        "model": model,
+        "fitted_components": fitted_components,
+        "rms_before_ms": round(rms_before, 4),
+        "rms_after_ms": round(rms_after, 4),
+    }
+
+
+def rv_residual_analysis(time, rv, rv_err, known_periods, instruments=None,
+                          min_period=1.0, max_period=None):
+    """Full RV residual analysis pipeline.
+
+    Steps:
+    1. Subtract per-instrument offsets (if instruments provided)
+    2. Fit and subtract sinusoids at known planet periods
+    3. Run Lomb-Scargle periodogram on residuals
+    4. Compare residual periodogram to original
+
+    Parameters
+    ----------
+    time : array-like
+        BJD timestamps.
+    rv : array-like
+        Radial velocities (m/s).
+    rv_err : array-like
+        RV uncertainties (m/s).
+    known_periods : list[float]
+        Known planet periods (days) to subtract.
+    instruments : list[str], optional
+        Instrument names per measurement. If provided, offsets are subtracted.
+    min_period : float
+        Minimum period for residual periodogram.
+    max_period : float, optional
+        Maximum period for residual periodogram.
+
+    Returns
+    -------
+    dict
+        Full analysis results: offset_correction (dict or None),
+        sinusoid_subtraction (dict), original_periodogram (dict),
+        residual_periodogram (dict), known_periods_used.
+    """
+    time = np.asarray(time, dtype=float)
+    rv = np.asarray(rv, dtype=float)
+    rv_err = np.asarray(rv_err, dtype=float)
+
+    result = {"known_periods_used": known_periods}
+
+    # Step 1: original periodogram for comparison
+    logger.info("RV residual analysis: computing original periodogram")
+    orig_pg = rv_periodogram(time, rv, rv_err, min_period=min_period,
+                              max_period=max_period)
+    result["original_periodogram"] = orig_pg
+
+    # Step 2: instrument offset correction
+    rv_working = rv.copy()
+    if instruments is not None:
+        offset_result = rv_subtract_instrument_offsets(time, rv, rv_err, instruments)
+        rv_working = offset_result["rv"]
+        result["offset_correction"] = {
+            "offsets": offset_result["offsets"],
+            "n_instruments": offset_result["n_instruments"],
+        }
+    else:
+        result["offset_correction"] = None
+
+    # Step 3: subtract known planet sinusoids
+    sinusoid_result = rv_subtract_sinusoids(time, rv_working, known_periods)
+    residuals = sinusoid_result["residuals"]
+    result["sinusoid_subtraction"] = {
+        "fitted_components": sinusoid_result["fitted_components"],
+        "rms_before_ms": sinusoid_result["rms_before_ms"],
+        "rms_after_ms": sinusoid_result["rms_after_ms"],
+    }
+
+    # Step 4: periodogram on residuals
+    logger.info("RV residual analysis: computing residual periodogram")
+    resid_pg = rv_periodogram(time, residuals, rv_err, min_period=min_period,
+                               max_period=max_period)
+    result["residual_periodogram"] = resid_pg
+
+    logger.info("RV residual analysis complete: original best P=%.2f d, "
+                "residual best P=%.2f d",
+                orig_pg.get("best_period") or 0,
+                resid_pg.get("best_period") or 0)
+
+    return result
+
+
+def rv_injection_recovery(time, rv_err, period_grid, k_grid, n_trials=50,
+                           stellar_mass_msun=1.0):
+    """Injection-recovery test for RV detection sensitivity.
+
+    Injects synthetic sinusoidal signals into noise realizations drawn from
+    rv_err, then attempts recovery via Lomb-Scargle periodogram. Computes
+    detection probability at each (period, K) grid point.
+
+    Parameters
+    ----------
+    time : array-like
+        BJD timestamps of actual observations (defines cadence/sampling).
+    rv_err : array-like
+        RV uncertainties (m/s) at each epoch.
+    period_grid : array-like
+        Periods (days) at which to test detection.
+    k_grid : array-like
+        RV semi-amplitudes (m/s) to inject.
+    n_trials : int
+        Number of noise realizations per grid point.
+    stellar_mass_msun : float
+        Stellar mass for mass conversion.
+
+    Returns
+    -------
+    dict
+        Detection probability map with keys: period_grid (array),
+        k_grid (array), detection_probability (2D array, shape [len(k_grid), len(period_grid)]),
+        mass_grid_mearth (2D array), n_trials.
+    """
+    from astropy.timeseries import LombScargle
+
+    time = np.asarray(time, dtype=float)
+    rv_err = np.asarray(rv_err, dtype=float)
+    period_grid = np.asarray(period_grid, dtype=float)
+    k_grid = np.asarray(k_grid, dtype=float)
+
+    baseline = time[-1] - time[0]
+    n_obs = len(time)
+    detection_prob = np.zeros((len(k_grid), len(period_grid)))
+
+    logger.info("RV injection-recovery: %d periods x %d amplitudes x %d trials "
+                "(%d total injections)",
+                len(period_grid), len(k_grid), n_trials,
+                len(period_grid) * len(k_grid) * n_trials)
+
+    for i, k_inj in enumerate(k_grid):
+        for j, p_inj in enumerate(period_grid):
+            # Skip periods longer than baseline/1.5
+            if p_inj > baseline / 1.5:
+                detection_prob[i, j] = 0.0
+                continue
+
+            n_detected = 0
+            for trial in range(n_trials):
+                # Generate noise realization
+                noise = np.random.normal(0, rv_err)
+
+                # Inject sinusoidal signal with random phase
+                phase_offset = np.random.uniform(0, 2 * np.pi)
+                signal = k_inj * np.sin(2 * np.pi * time / p_inj + phase_offset)
+                rv_synthetic = signal + noise
+
+                # Attempt recovery via Lomb-Scargle
+                ls = LombScargle(time, rv_synthetic, rv_err)
+
+                # Evaluate power at injected period and nearby
+                test_freqs = np.linspace(0.8 / p_inj, 1.2 / p_inj, 50)
+                power = ls.power(test_freqs)
+                max_power = float(np.max(power))
+
+                # Detection criterion: FAP < 0.01 at the recovered period
+                fap = float(ls.false_alarm_probability(max_power))
+                if fap < 0.01:
+                    n_detected += 1
+
+            detection_prob[i, j] = n_detected / n_trials
+
+        logger.info("  K=%.2f m/s: mean detection prob = %.2f",
+                     k_inj, np.mean(detection_prob[i, :]))
+
+    # Convert K grid to mass grid
+    mass_grid = np.zeros_like(detection_prob)
+    for j, p in enumerate(period_grid):
+        for i, k in enumerate(k_grid):
+            mass_grid[i, j] = rv_to_planet_mass(k, p,
+                                                 stellar_mass_msun=stellar_mass_msun)
+
+    logger.info("Injection-recovery complete: detection probability range [%.2f, %.2f]",
+                float(np.min(detection_prob)), float(np.max(detection_prob)))
+
+    return {
+        "period_grid": period_grid,
+        "k_grid": k_grid,
+        "detection_probability": detection_prob,
+        "mass_grid_mearth": mass_grid,
+        "n_trials": n_trials,
+        "n_obs": n_obs,
+        "baseline_days": float(baseline),
+    }
+
+
 def rv_to_planet_mass(k_ms, period_days, stellar_mass_msun=1.0, eccentricity=0.0):
     """Convert RV semi-amplitude to minimum planet mass.
 
@@ -384,14 +718,22 @@ def rv_to_planet_mass(k_ms, period_days, stellar_mass_msun=1.0, eccentricity=0.0
 # --- Internal helpers ---
 
 def _generate_search_names(star_name):
-    """Generate variant names for archive queries."""
-    names = [star_name]
+    """Generate unique variant names for archive queries."""
+    seen = set()
+    names = []
 
-    # If it looks like "HD NNNNN", also try without space
+    def _add(name):
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+
+    _add(star_name)
+
+    # If it looks like "HD NNNNN", also try case variants
     name_stripped = star_name.strip()
     if name_stripped.upper().startswith("HD "):
-        names.append(name_stripped.upper())
-        names.append(name_stripped.lower())
+        _add(name_stripped.upper())
+        _add(name_stripped.lower())
 
     # Common aliases
     aliases = {
@@ -410,8 +752,7 @@ def _generate_search_names(star_name):
     for key, alias_list in aliases.items():
         if star_name.lower() in key.lower() or key.lower() in star_name.lower():
             for alias in alias_list:
-                if alias not in names:
-                    names.append(alias)
+                _add(alias)
 
     return names
 

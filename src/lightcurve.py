@@ -269,6 +269,16 @@ def bin_lightcurve(lc_data, bin_cadence_s=120.0):
     flux = lc_data["flux"]
     flux_err = lc_data["flux_err"]
 
+    # Ensure time-sorted order (lightkurve stitch can produce slight overlaps
+    # at sector boundaries, breaking searchsorted)
+    n_unsorted = int(np.sum(np.diff(time) < 0))
+    if n_unsorted > 0:
+        sort_idx = np.argsort(time)
+        time = time[sort_idx]
+        flux = flux[sort_idx]
+        flux_err = flux_err[sort_idx]
+        logger.info("Sorted %d out-of-order point(s) before binning", n_unsorted)
+
     bin_width_days = bin_cadence_s / 86400.0
     t_start = time[0]
     t_end = time[-1]
@@ -279,7 +289,7 @@ def bin_lightcurve(lc_data, bin_cadence_s=120.0):
     bin_err = []
 
     bin_edges = t_start + np.arange(n_bins + 1) * bin_width_days
-    # Use searchsorted for fast binning
+    # Use searchsorted for fast binning (requires sorted time)
     indices = np.searchsorted(time, bin_edges)
     for i in range(n_bins):
         lo, hi = indices[i], indices[i + 1]

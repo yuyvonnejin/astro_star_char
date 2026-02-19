@@ -3,6 +3,7 @@
 **Date: 2026-02-19**
 **Status: Complete** -- all modules implemented, 27 unit tests + 5 integration checks passing
 **Prerequisite: Phase 7 PoC plan approved (docs/phase7_exo_earth_poc.md)**
+**Next: Phase 7b deep dive started -- see docs/phase7b_deep_dive.md**
 
 ---
 
