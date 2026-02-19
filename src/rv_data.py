@@ -76,61 +76,53 @@ def query_known_planets(star_name):
 
 
 def query_dace_rv(star_name):
-    """Retrieve public RV time series from the DACE archive.
+    """Retrieve public RV time series from the DACE archive via dace-query.
 
     DACE (Data and Analysis Center for Exoplanets) hosts reduced RV data
-    from major spectrographs (HARPS, ESPRESSO, CORALIE, etc.).
+    from major spectrographs (HARPS, ESPRESSO, CORALIE, CORAVEL, etc.).
+    Uses the dace-query Python package (v2.0.0) for access.
 
     Parameters
     ----------
     star_name : str
-        Target name (e.g., 'HD 20794', 'tau Cet').
+        Target name (e.g., 'HD 20794', 'tau Cet'). DACE typically expects
+        HD numbers without spaces (e.g., 'HD20794').
 
     Returns
     -------
     dict or None
         RV data with keys:
-        - time: array of BJD timestamps
+        - time: array of RJD timestamps (reduced JD)
         - rv: array of radial velocities (m/s)
         - rv_err: array of RV uncertainties (m/s)
-        - instrument: array of instrument names
+        - instrument: list of instrument names per measurement
         - n_measurements: total count
         - time_baseline_days: total time span
         - instruments: list of unique instruments
+        - drs_qc: array of DRS quality control flags
         Returns None if no data found or query fails.
     """
-    import requests
-
-    # DACE spectroscopy search endpoint
-    url = f"{DACE_API_BASE}/spectroscopy/astro/query"
-    search_names = _generate_search_names(star_name)
+    search_names = _generate_dace_names(star_name)
 
     for search_name in search_names:
-        params = {
-            "target": search_name,
-            "output_format": "json",
-        }
-        headers = {
-            "Accept": "application/json",
-        }
-
-        logger.info("Querying DACE RV archive for '%s'", search_name)
+        logger.info("Querying DACE (dace-query) for '%s'", search_name)
         try:
-            response = requests.get(url, params=params, headers=headers, timeout=60)
-            if response.status_code == 404:
-                logger.info("No DACE data for '%s'", search_name)
-                continue
-            response.raise_for_status()
-            data = response.json()
+            from dace_query.spectroscopy import Spectroscopy
 
-            if data and len(data) > 0:
-                return _parse_dace_rv(data, star_name)
-        except requests.exceptions.Timeout:
-            logger.warning("DACE query timed out for '%s'", search_name)
-        except requests.exceptions.RequestException as e:
+            data = Spectroscopy.get_timeseries(
+                target=search_name,
+                sorted_by_instrument=False,
+                output_format='dict',
+            )
+
+            if data and 'rjd' in data and len(data['rjd']) > 0:
+                return _parse_dace_query_rv(data, star_name)
+
+        except ImportError:
+            logger.warning("dace-query not installed; pip install dace-query")
+            return None
+        except Exception as e:
             logger.warning("DACE query failed for '%s': %s", search_name, e)
-        except (ValueError, KeyError) as e:
-            logger.warning("Failed to parse DACE response for '%s': %s", search_name, e)
 
     logger.info("No DACE RV data found for '%s'", star_name)
     return None
@@ -422,6 +414,123 @@ def _generate_search_names(star_name):
                     names.append(alias)
 
     return names
+
+
+def _generate_dace_names(star_name):
+    """Generate DACE-specific name variants.
+
+    DACE typically uses HD numbers without spaces (e.g., 'HD20794').
+    """
+    names = []
+    name_stripped = star_name.strip()
+
+    # If already HD format, try with and without space
+    if name_stripped.upper().startswith("HD "):
+        hd_nospace = name_stripped.upper().replace("HD ", "HD")
+        names.append(hd_nospace)
+        names.append(name_stripped)
+    elif name_stripped.upper().startswith("HD"):
+        names.append(name_stripped)
+        # Try with space
+        hd_space = "HD " + name_stripped[2:]
+        names.append(hd_space)
+
+    # Look up HD number from aliases
+    hd_map = {
+        "82 G. Eridani": "HD20794",
+        "Tau Ceti": "HD10700",
+        "Alpha Centauri A": "HD128620",
+        "Eta Cassiopeiae A": "HD4614",
+        "Delta Pavonis": "HD190248",
+        "61 Virginis": "HD115617",
+        "Beta CVn": "HD109358",
+        "Zeta Tucanae": "HD1581",
+        "18 Scorpii": "HD146233",
+        "HD 134060": "HD134060",
+    }
+
+    for key, hd_name in hd_map.items():
+        if name_stripped.lower() in key.lower() or key.lower() in name_stripped.lower():
+            if hd_name not in names:
+                names.insert(0, hd_name)  # HD without space first
+
+    # If nothing matched, just try the name as-is
+    if not names:
+        names.append(name_stripped)
+
+    return names
+
+
+def _parse_dace_query_rv(data, star_name):
+    """Parse dace-query get_timeseries() output into standard RV data format.
+
+    The dace-query package returns a flat dict with parallel arrays when
+    sorted_by_instrument=False.
+    """
+    times = np.array(data.get('rjd', []), dtype=float)
+    rvs = np.array(data.get('rv', []), dtype=float)
+    rv_errs = np.array(data.get('rv_err', []), dtype=float)
+    instruments = list(data.get('ins_name', ['unknown'] * len(times)))
+    drs_qc = data.get('drs_qc', [True] * len(times))
+
+    if len(times) == 0:
+        return None
+
+    # Filter: valid RV, valid error, positive error
+    valid = np.isfinite(rvs) & np.isfinite(rv_errs) & (rv_errs > 0)
+
+    # Apply DRS quality control if available
+    if drs_qc is not None:
+        qc = np.array(drs_qc, dtype=bool)
+        valid = valid & qc
+
+    times = times[valid]
+    rvs = rvs[valid]
+    rv_errs = rv_errs[valid]
+    instruments = [str(instruments[i]) for i in range(len(valid)) if valid[i]]
+
+    if len(times) == 0:
+        logger.info("DACE returned data but all measurements filtered for '%s'", star_name)
+        return None
+
+    # Sort by time
+    sort_idx = np.argsort(times)
+    times = times[sort_idx]
+    rvs = rvs[sort_idx]
+    rv_errs = rv_errs[sort_idx]
+    instruments = [instruments[i] for i in sort_idx]
+
+    unique_instruments = sorted(set(instruments))
+    baseline = float(times[-1] - times[0])
+
+    # Per-instrument summary
+    inst_summary = {}
+    for inst in unique_instruments:
+        mask = np.array([i == inst for i in instruments])
+        inst_summary[inst] = {
+            "n_measurements": int(np.sum(mask)),
+            "median_err_ms": round(float(np.median(rv_errs[mask])), 3),
+            "time_span_days": round(float(times[mask][-1] - times[mask][0]), 1),
+        }
+
+    logger.info("DACE RV for '%s': %d measurements (QC-filtered), %.0f day baseline, "
+                "instruments: %s",
+                star_name, len(times), baseline, ", ".join(unique_instruments))
+    for inst, summary in inst_summary.items():
+        logger.info("  %s: %d meas, median err %.3f m/s, %.0f day span",
+                     inst, summary["n_measurements"], summary["median_err_ms"],
+                     summary["time_span_days"])
+
+    return {
+        "time": times,
+        "rv": rvs,
+        "rv_err": rv_errs,
+        "instrument": instruments,
+        "n_measurements": len(times),
+        "time_baseline_days": baseline,
+        "instruments": unique_instruments,
+        "instrument_summary": inst_summary,
+    }
 
 
 def _clean_planet_records(data):

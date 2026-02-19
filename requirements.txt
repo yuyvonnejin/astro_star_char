@@ -3,3 +3,4 @@ scipy
 astroquery
 pytest
 lightkurve
+dace-query
