@@ -1,0 +1,21 @@
+Research Summary and Proposal.
+
+Research Summary
+We built the pipeline to determine star characteristics based on Gaia database, and transit signals based on TESS/Kepler Lightcurve.
+The result is fairly strong for star calibration, but less accurate for transits.
+Specifically, the transit results is poor when star has variability (either periodic flare or binary). 
+Reflecting on the goal, I want to focus the project to detect if there are star-planetary system truly like ours. There are evidence stars with strong periodicity may carry strong periodic radiation which makes the planet inhabitable. In fact, it is fair to assume that human is fragile enough that we want to avoid such hostile environment where there's significant variation in insolation anyway. Therefore if we want to hunt an expo-solar system,  the focus would be to reduce scope to quasi-solar stars with min variability, as oppose to trying to refine the pipeline in incorporate variable stars.
+Focusing on solar like stars, we compared our pipeline to known 700+ TESS confirmed planets - only 13 qualifies for the criteria. The comparison yield fairly satisfactory results. Other than 1-2 few data errors, we were able to detect planets transiting with matching periods (it may not show up as the best BLS result, but nevertheless in the canidate). 
+However, it is clear from the data as well that all these planets have very short transit period. Looking at the scatter plot of period/radius diagram of existing transit vs solar system's, it is revealed there's a strong sampling bias of what transit and recover vs what the true distribution of planets could be - Transit is better at detecting bigger and closer planets compared to the distribution of solar system, because of SNR. And within the 700+ TESS cases, theres not even a single candidate that resembles Earth's situation at all.
+Further research confirmed that currently, there has not been any roughly 1AU, 1Solar Mass, 1 Insolation HZ candidate at all. (is this true?) This can be attributed to the bias of methodology itself
+
+After research and reflection, it is determined that this research case can be closed. Rather, to reach the goal of finding Exo-earth, a new path is proposed.
+- Focus on expo-Sun only
+- Start from closest to us than to further.
+- Use all available method, not limited to Transit to detect.
+- Start with manual search (let's say best 10 candidates based on above), so that we have a detailed, refined understanding of what tools is available, before automate the pipeline to anywhere further. Understand the limit of each tool. (RV, single-transit manual ligthcurve inspections are good candidate. Can also look at FFI, direct imaging since they are close enough)
+- Also go through existing literature to understand what has been done.
+
+Unique value of the new phase:
+- Known existing project would be CitizenSicnece and ExpoHunter, but they do a carpet search and don't have specific target. 
+- Claude likes to adivse on looking at existing TESS candidate and verify the signal. I would oppose this ideal because: 1) a lot of people would actually go this way, if this is the default AI proposal. AI has a centralization tendency, and we don't have to follow the crowded path, 2) verification is a lot simpler than doing something completely new, thus combined with the above I believe the community will soon be able to achieve in that direction, which I don't feel necessary to add. 
