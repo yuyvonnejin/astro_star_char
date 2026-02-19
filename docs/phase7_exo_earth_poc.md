@@ -166,7 +166,7 @@ The full inventory from RECONS and Gaia, from which the target list is drawn:
 | 2 | Tau Ceti | G8.5V | 5375 | 3.65 | 0.78 | C | 4 unconfirmed | No |
 | 3 | Eta Cassiopeiae A | G0V | 6012 | 5.92 | 1.03 | B | 1 unconfirmed | Yes (wide, 70+ AU) |
 | 4 | 36 Ophiuchi A | G7V | 5300 | 5.95 | 0.85 | C | None | Triple system |
-| 5 | 82 G. Eridani | G6V | 5401 | 6.04 | 0.70 | C | 3 confirmed (d in HZ) | No |
+| 5 | 82 G. Eridani | G6V | 5401 | 6.04 | 0.70 | C | 4 confirmed (b, d, e, f) | No |
 | 6 | Delta Pavonis | G8IV-V | 5604 | 6.11 | 1.05 | B/C | None (deep limits) | No |
 | 7 | Xi Bootis A | G8Ve | 5400 | 6.70 | 0.90 | C | None | Yes (close) |
 | 8 | Mu Cassiopeiae A | G5Vp | 5308 | 7.55 | 0.74 | C | None | Yes (astrom. binary) |
@@ -190,7 +190,7 @@ Selected from the 10 pc inventory above, prioritizing: (1) single stars or wide 
 |----------|------|------|-----------|----------|-----------|--------|---------------|-------------------|
 | 1 | **Alpha Centauri A** | A/B | 1.34 | 5790 | 1.10 | +0.20 | 1 unconfirmed | HARPS, ESPRESSO, Gaia; TESS saturated |
 | 2 | **Tau Ceti** (HD 10700) | C | 3.65 | 5375 | 0.78 | -0.50 | 4 unconfirmed (e,f,g,h) | 9000+ HARPS measurements, TESS multi-sector, Gaia |
-| 3 | **82 G. Eridani** (HD 20794) | C | 6.04 | 5401 | 0.70 | -0.40 | 3 confirmed (d in HZ) | HARPS + ESPRESSO, TESS Sectors 3/4/30/31, Gaia |
+| 3 | **82 G. Eridani** (HD 20794) | C | 6.04 | 5401 | 0.70 | -0.40 | 4 confirmed (b, d, e, f; d in HZ) | HARPS + ESPRESSO + CORAVEL, TESS 26 sectors, Gaia |
 | 4 | **Eta Cassiopeiae A** | B | 5.92 | 6012 | 1.03 | -0.30 | 1 unconfirmed (approximately 22 Mearth) | RV multi-campaign, TESS, Gaia; wide binary |
 | 5 | **Delta Pavonis** | B/C | 6.11 | 5604 | 1.05 | +0.33 | None (RV limit K < 1 m/s) | CORALIE + HARPS since 1998, TESS Sectors 1-4+, Gaia |
 | 6 | **61 Virginis** (HD 115617) | C | 8.53 | 5531 | 0.94 | -0.02 | 3 confirmed (b, c, d) | HARPS + Keck + AAT, TESS, Gaia |
@@ -213,7 +213,7 @@ Selected from the 10 pc inventory above, prioritizing: (1) single stars or wide 
 
 - **Alpha Centauri A** is the nearest G2V star but the binary companion (alpha Cen B at 11-35 AU separation) complicates RV and astrometric analysis. It represents the hardest but highest-value target.
 - **Tau Ceti** has the richest RV dataset of any single G star (9000+ HARPS measurements, approximately 30 cm/s RV dispersion). Its low metallicity ([Fe/H] = -0.50) may suppress rocky planet formation, but the massive debris disk suggests an active planetary system.
-- **82 G. Eridani** is the strongest current result: a confirmed 5.8 Mearth super-Earth in the habitable zone (planet d, confirmed 2024-2025 via HARPS + ESPRESSO). This makes it both a validation target and a system where additional lower-mass planets may await detection.
+- **82 G. Eridani** is the strongest current result: 4 confirmed planets (b: 18.3 d, d: 89.7 d, e: 147.0 d, f: 647.6 d) spanning 2.2--5.8 Mearth, detected via HARPS + ESPRESSO + CORAVEL over 42 years (12,303 RV measurements). This makes it both a validation target and a system where additional lower-mass planets may await detection.
 - **18 Scorpii** at 14.1 pc is the nearest true "solar twin" (nearly identical Teff, log g, metallicity, and activity level to the Sun). If any star harbors a system like ours, this is a prime candidate.
 
 ---
@@ -287,12 +287,14 @@ This is standard practice in observational astronomy and has direct scientific v
 
 ## 6. Implementation Roadmap
 
-### Phase 7a: Foundation (approximately 2-3 sessions)
+### Phase 7a: Foundation -- COMPLETE (2026-02-19)
 
-- [ ] Finalize target list (validate against Gaia DR3; confirm data availability)
-- [ ] Build RV data retrieval module (DACE archive API or ESO archive download)
-- [ ] Build Gaia proper motion anomaly analysis
-- [ ] Write per-target report template
+- [x] Finalize target list (validate against Gaia DR3; confirm data availability) -- `src/targets.py`
+- [x] Build RV data retrieval module (DACE via `dace-query` v2.0.0 + NASA Exoplanet Archive TAP) -- `src/rv_data.py`
+- [x] Build Gaia proper motion anomaly analysis -- `src/proper_motion.py`
+- [x] Write per-target report template -- `src/target_report.py`
+
+**Results**: 27 unit tests passing, integration test on 82 G. Eridani validated end-to-end (12,303 DACE RV measurements, 4 confirmed planets, PMa SNR=15.5, 26 TESS sectors). See `docs/phase7a_implementation.md` for details.
 
 ### Phase 7b: First Deep Dive -- 82 G. Eridani (approximately 2-3 sessions)
 
@@ -327,20 +329,20 @@ Apply the refined workflow to:
 
 ### 7.1 Data Access
 
-| Archive | Access Method | Authentication | Notes |
-|---------|-------------|----------------|-------|
-| MAST (TESS/Kepler) | lightkurve (Python) | None | Already integrated in pipeline |
-| Gaia DR3 | astroquery.gaia (TAP+) | None | Already integrated in pipeline |
-| ESO Archive (HARPS, ESPRESSO) | HTTP download or astroquery.eso | ESO account (free registration) | New; need to assess API |
-| DACE (RV database) | dace-query Python package or REST API | None for public data | Geneva Observatory RV repository |
-| NASA Exoplanet Archive | TAP query or pyvo | None | Planet parameters and orbital solutions |
+| Archive | Access Method | Authentication | Status (as of 2026-02-19) |
+|---------|-------------|----------------|---------------------------|
+| MAST (TESS/Kepler) | lightkurve (Python) | None | Working. Already integrated in pipeline. |
+| Gaia DR3 | astroquery.gaia (TAP+) | None | Working. Cosmetic password warning (does not block queries). |
+| ESO Archive (HARPS, ESPRESSO) | HTTP download or astroquery.eso | ESO account (free registration) | Not yet tested. |
+| DACE (RV database) | `dace-query` v2.0.0 (Python package) | None for public data | Working. REST API DNS fails; pip package uses different backend. 12,303 measurements retrieved for HD 20794. |
+| NASA Exoplanet Archive | TAP query via astroquery | None | Working for planet queries (`ps` table). No raw RV time series table available. |
 
 ### 7.2 New Dependencies
 
-| Package | Purpose | Security Notes |
-|---------|---------|---------------|
-| dace-query | Access DACE RV archive | Geneva Observatory package; open source |
-| pyvo | Virtual Observatory access for catalog queries | Astropy-affiliated; well-maintained |
+| Package | Purpose | Security Notes | Status |
+|---------|---------|---------------|--------|
+| dace-query | Access DACE RV archive | Geneva Observatory package; open source | Installed v2.0.0; working |
+| pyvo | Virtual Observatory access for catalog queries | Astropy-affiliated; well-maintained | Not needed for Phase 7a |
 
 ### 7.3 Existing Pipeline Reuse
 
