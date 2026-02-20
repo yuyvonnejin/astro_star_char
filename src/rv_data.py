@@ -715,6 +715,111 @@ def rv_to_planet_mass(k_ms, period_days, stellar_mass_msun=1.0, eccentricity=0.0
     return m_planet_kg / M_earth
 
 
+def rv_filter_instruments(rv_data, exclude=None, min_precision_ms=None):
+    """Filter RV data by instrument name or precision threshold.
+
+    Removes measurements from instruments that are too imprecise for
+    precision RV analysis. Default threshold of 50 m/s catches legacy
+    instruments like CORAVEL (~280 m/s median error) while keeping
+    modern spectrographs (HARPS ~1 m/s, ESPRESSO ~0.25 m/s).
+
+    Parameters
+    ----------
+    rv_data : dict
+        RV data dict with keys: time, rv, rv_err, instrument, instruments,
+        n_measurements, time_baseline_days.
+    exclude : list[str], optional
+        Instrument names to exclude (exact match).
+    min_precision_ms : float, optional
+        Exclude instruments whose median RV error exceeds this threshold
+        (m/s). Default: None (no precision filtering). Suggested: 50.0.
+
+    Returns
+    -------
+    dict
+        Filtered RV data with same structure as input, plus
+        'excluded_instruments' key listing what was removed.
+    """
+    time = np.asarray(rv_data["time"], dtype=float)
+    rv = np.asarray(rv_data["rv"], dtype=float)
+    rv_err = np.asarray(rv_data["rv_err"], dtype=float)
+    instruments = list(rv_data["instrument"])
+    inst_arr = np.array(instruments)
+
+    if exclude is None:
+        exclude = []
+    exclude = list(exclude)
+
+    # Determine instruments to exclude by precision threshold
+    if min_precision_ms is not None:
+        unique_inst = sorted(set(instruments))
+        for inst in unique_inst:
+            if inst in exclude:
+                continue
+            mask = inst_arr == inst
+            median_err = float(np.median(rv_err[mask]))
+            if median_err > min_precision_ms:
+                exclude.append(inst)
+                logger.info("Excluding %s: median error %.1f m/s > %.1f m/s "
+                            "threshold (%d measurements)",
+                            inst, median_err, min_precision_ms,
+                            int(np.sum(mask)))
+
+    if not exclude:
+        logger.info("No instruments excluded; returning original data")
+        result = dict(rv_data)
+        result["excluded_instruments"] = []
+        return result
+
+    # Build keep mask
+    keep = np.ones(len(time), dtype=bool)
+    for exc in exclude:
+        keep &= (inst_arr != exc)
+
+    n_removed = int(np.sum(~keep))
+    if n_removed == len(time):
+        logger.error("All measurements excluded -- returning original data")
+        result = dict(rv_data)
+        result["excluded_instruments"] = exclude
+        return result
+
+    time_f = time[keep]
+    rv_f = rv[keep]
+    rv_err_f = rv_err[keep]
+    instruments_f = [instruments[i] for i in range(len(keep)) if keep[i]]
+    unique_f = sorted(set(instruments_f))
+
+    # Rebuild instrument summary
+    inst_summary = {}
+    for inst in unique_f:
+        mask = np.array([i == inst for i in instruments_f])
+        inst_summary[inst] = {
+            "n_measurements": int(np.sum(mask)),
+            "median_err_ms": round(float(np.median(rv_err_f[mask])), 3),
+            "time_span_days": round(
+                float(time_f[mask][-1] - time_f[mask][0]), 1
+            ),
+        }
+
+    baseline = float(time_f[-1] - time_f[0]) if len(time_f) > 1 else 0.0
+
+    logger.info("Filtered RV data: %d -> %d measurements "
+                "(removed %d from %s)",
+                len(time), len(time_f), n_removed, exclude)
+
+    return {
+        "time": time_f,
+        "rv": rv_f,
+        "rv_err": rv_err_f,
+        "instrument": instruments_f,
+        "n_measurements": len(time_f),
+        "time_baseline_days": baseline,
+        "instruments": unique_f,
+        "instrument_summary": inst_summary,
+        "excluded_instruments": exclude,
+    }
+
+
 # --- Internal helpers ---
 
 def _generate_search_names(star_name):

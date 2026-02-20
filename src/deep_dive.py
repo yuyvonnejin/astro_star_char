@@ -72,7 +72,7 @@ def run_deep_dive(target_name, max_tess_sectors=26,
     result = {
         "target": _target_info(target),
         "generated_utc": datetime.utcnow().isoformat(),
-        "analysis_version": "phase7b",
+        "analysis_version": "phase7b.2",
     }
 
     # Step 2: Stellar properties via pipeline (Modules 1-3)
@@ -223,37 +223,54 @@ def _run_known_planets(target):
 def _known_planets_fallback(target):
     """Return hardcoded planet data for key targets when NASA is unreachable.
 
-    Reference data from peer-reviewed publications (NASA Exoplanet Archive
-    composite values, retrieved 2026-02). Only includes targets from the
-    Phase 7 catalog that have confirmed planets.
+    Reference data from peer-reviewed publications. HD 20794 uses Nari et al.
+    (2025, A&A 693, A297) which confirms only 3 planets (b, c, d) and
+    rejects the 147-day and 40-day signals.
+
+    Note: NASA Exoplanet Archive may list 4 planets for HD 20794 including
+    the 147-day "planet e" from Feng (2017). This is disputed -- Nari 2025
+    finds it worsens the model evidence.
     """
     # Key: HD number -> list of planet dicts
     reference = {
         "HD 20794": [
+            # 3 confirmed planets per Nari et al. (2025, A&A 693, A297)
+            # K amplitudes and eccentricities from their Table 4
             {"pl_name": "HD 20794 b", "hostname": "HD 20794",
              "period_days": 18.315, "mass_earth": 2.7, "mass_jupiter": 0.0085,
              "radius_earth": None, "radius_jupiter": None,
              "discovery_method": "Radial Velocity", "discovery_year": 2011,
              "semi_major_axis_au": 0.1207, "eq_temp_k": None,
-             "eccentricity": 0.0, "distance_pc": 6.04},
-            {"pl_name": "HD 20794 d", "hostname": "HD 20794",
-             "period_days": 89.694, "mass_earth": 3.53, "mass_jupiter": 0.0111,
+             "eccentricity": 0.06, "distance_pc": 6.04,
+             "k_ms": 0.614, "confirmed": True,
+             "reference": "Nari+2025"},
+            {"pl_name": "HD 20794 c", "hostname": "HD 20794",
+             "period_days": 89.68, "mass_earth": 3.53, "mass_jupiter": 0.0111,
              "radius_earth": None, "radius_jupiter": None,
              "discovery_method": "Radial Velocity", "discovery_year": 2011,
              "semi_major_axis_au": 0.3499, "eq_temp_k": None,
-             "eccentricity": 0.0, "distance_pc": 6.04},
-            {"pl_name": "HD 20794 e", "hostname": "HD 20794",
-             "period_days": 147.025, "mass_earth": 4.77, "mass_jupiter": 0.015,
-             "radius_earth": None, "radius_jupiter": None,
-             "discovery_method": "Radial Velocity", "discovery_year": 2011,
-             "semi_major_axis_au": 0.5095, "eq_temp_k": None,
-             "eccentricity": 0.0, "distance_pc": 6.04},
-            {"pl_name": "HD 20794 f", "hostname": "HD 20794",
+             "eccentricity": 0.08, "distance_pc": 6.04,
+             "k_ms": 0.502, "confirmed": True,
+             "reference": "Nari+2025"},
+            {"pl_name": "HD 20794 d", "hostname": "HD 20794",
              "period_days": 647.6, "mass_earth": 5.35, "mass_jupiter": 0.0168,
              "radius_earth": None, "radius_jupiter": None,
              "discovery_method": "Radial Velocity", "discovery_year": 2017,
              "semi_major_axis_au": 1.37, "eq_temp_k": None,
-             "eccentricity": 0.0, "distance_pc": 6.04},
+             "eccentricity": 0.45, "distance_pc": 6.04,
+             "k_ms": 0.567, "confirmed": True,
+             "reference": "Nari+2025"},
+            # 147-day signal: DISPUTED (Feng 2017 "planet e")
+            # Nari 2025 finds adding it worsens model evidence
+            # Included for reference but flagged as disputed
+            {"pl_name": "HD 20794 e (disputed)", "hostname": "HD 20794",
+             "period_days": 147.025, "mass_earth": 4.77, "mass_jupiter": 0.015,
+             "radius_earth": None, "radius_jupiter": None,
+             "discovery_method": "Radial Velocity", "discovery_year": 2017,
+             "semi_major_axis_au": 0.5095, "eq_temp_k": None,
+             "eccentricity": 0.0, "distance_pc": 6.04,
+             "k_ms": None, "confirmed": False,
+             "reference": "Feng+2017, disputed by Nari+2025"},
         ],
         "HD 10700": [
             {"pl_name": "tau Cet e", "hostname": "HD 10700",
@@ -292,10 +309,21 @@ def _known_planets_fallback(target):
 
 
 def _extract_known_periods(known_planets_result):
-    """Extract orbital periods from known planets result."""
+    """Extract orbital periods from confirmed known planets.
+
+    Skips planets flagged as disputed (confirmed=False) to avoid
+    fitting spurious signals. This matters for HD 20794 where the
+    147-day "planet e" is disputed by Nari et al. (2025).
+    """
     periods = []
     if known_planets_result and known_planets_result.get("planets"):
         for planet in known_planets_result["planets"]:
+            # Skip disputed planets
+            if planet.get("confirmed") is False:
+                logger.info("Skipping disputed planet %s (P=%.1f d)",
+                            planet.get("pl_name", "?"),
+                            planet.get("period_days", 0))
+                continue
             p = planet.get("period_days")
             if p is not None and p > 0:
                 periods.append(float(p))
@@ -431,11 +459,17 @@ def _run_tess_analysis(target, stellar_mass, stellar_radius, stellar_teff,
 
 
 def _run_rv_analysis(target, known_periods):
-    """Run RV data retrieval and multi-planet residual analysis."""
+    """Run RV data retrieval and multi-planet residual analysis.
+
+    Uses Keplerian fitting via RadVel if available, falls back to
+    sinusoidal subtraction otherwise. Filters out low-precision
+    instruments (CORAVEL) before analysis.
+    """
     logger.info("--- RV Data + Residual Analysis ---")
     try:
         from src.rv_data import (
             query_dace_rv, rv_periodogram, rv_residual_analysis,
+            rv_filter_instruments,
         )
 
         rv_data = query_dace_rv(target["hd"])
@@ -447,16 +481,28 @@ def _run_rv_analysis(target, known_periods):
                 "rv_raw": None,
             }
 
+        # Filter out low-precision instruments (catches CORAVEL at ~280 m/s)
+        rv_data_filtered = rv_filter_instruments(
+            rv_data, min_precision_ms=50.0,
+        )
+        excluded = rv_data_filtered.get("excluded_instruments", [])
+        if excluded:
+            logger.info("Excluded instruments: %s", excluded)
+
         rv_summary = {
-            "n_measurements": rv_data["n_measurements"],
-            "time_baseline_days": rv_data["time_baseline_days"],
-            "instruments": rv_data["instruments"],
-            "instrument_summary": rv_data.get("instrument_summary"),
+            "n_measurements": rv_data_filtered["n_measurements"],
+            "n_measurements_raw": rv_data["n_measurements"],
+            "time_baseline_days": rv_data_filtered["time_baseline_days"],
+            "instruments": rv_data_filtered["instruments"],
+            "instrument_summary": rv_data_filtered.get("instrument_summary"),
+            "excluded_instruments": excluded,
             "status": "ok",
         }
 
-        # Run basic periodogram
-        pg = rv_periodogram(rv_data["time"], rv_data["rv"], rv_data["rv_err"])
+        # Run basic periodogram on filtered data
+        pg = rv_periodogram(rv_data_filtered["time"],
+                            rv_data_filtered["rv"],
+                            rv_data_filtered["rv_err"])
         rv_summary["periodogram"] = {
             "best_period": pg.get("best_period"),
             "best_power": pg.get("best_power"),
@@ -465,31 +511,16 @@ def _run_rv_analysis(target, known_periods):
         }
 
         # Run residual analysis if we have known planet periods
-        residual = None
+        residual_summary = None
         if known_periods:
-            residual = rv_residual_analysis(
-                rv_data["time"], rv_data["rv"], rv_data["rv_err"],
-                known_periods=known_periods,
-                instruments=rv_data.get("instrument"),
+            residual_summary = _run_keplerian_or_sinusoidal(
+                rv_data_filtered, known_periods, target,
             )
-            # Strip large arrays for storage (keep only summary)
-            residual_summary = {
-                "known_periods_used": residual["known_periods_used"],
-                "offset_correction": residual.get("offset_correction"),
-                "sinusoid_subtraction": residual.get("sinusoid_subtraction"),
-                "original_best_period": residual["original_periodogram"].get("best_period"),
-                "original_fap": residual["original_periodogram"].get("fap"),
-                "residual_best_period": residual["residual_periodogram"].get("best_period"),
-                "residual_fap": residual["residual_periodogram"].get("fap"),
-                "residual_peaks": residual["residual_periodogram"].get("peaks", []),
-            }
-        else:
-            residual_summary = None
 
         return {
             "rv_data": rv_summary,
             "residual_analysis": residual_summary,
-            "rv_raw": rv_data,
+            "rv_raw": rv_data_filtered,
         }
 
     except Exception as e:
@@ -499,6 +530,139 @@ def _run_rv_analysis(target, known_periods):
             "residual_analysis": None,
             "rv_raw": None,
         }
+
+
+def _run_keplerian_or_sinusoidal(rv_data, known_periods, target):
+    """Try Keplerian fit first, fall back to sinusoidal subtraction.
+
+    Parameters
+    ----------
+    rv_data : dict
+        Filtered RV data (CORAVEL excluded).
+    known_periods : list[float]
+        Known planet periods (days).
+    target : dict
+        Target info dict.
+
+    Returns
+    -------
+    dict
+        Residual analysis summary for the report.
+    """
+    # Try Keplerian fit via RadVel
+    try:
+        from src.rv_keplerian import keplerian_residual_analysis
+
+        # Build planet_params from known periods + reference data
+        planet_params = _build_planet_params(known_periods, target)
+
+        logger.info("Using RadVel Keplerian fit (%d planets)", len(planet_params))
+        residual = keplerian_residual_analysis(
+            rv_data["time"], rv_data["rv"], rv_data["rv_err"],
+            instruments=rv_data["instrument"],
+            planet_params=planet_params,
+        )
+
+        # Build summary (strip large arrays)
+        kep_fit = residual.get("keplerian_fit", {})
+        residual_summary = {
+            "method": "keplerian",
+            "known_periods_used": residual["known_periods_used"],
+            "offset_correction": residual.get("offset_correction"),
+            "sinusoid_subtraction": residual.get("sinusoid_subtraction"),
+            "original_best_period": residual["original_periodogram"].get("best_period"),
+            "original_fap": residual["original_periodogram"].get("fap"),
+            "residual_best_period": residual["residual_periodogram"].get("best_period"),
+            "residual_fap": residual["residual_periodogram"].get("fap"),
+            "residual_peaks": residual["residual_periodogram"].get("peaks", []),
+        }
+
+        # Add Keplerian-specific results
+        if kep_fit.get("status") == "ok":
+            residual_summary["keplerian_planets"] = kep_fit.get("planets", [])
+            residual_summary["keplerian_instruments"] = kep_fit.get("instruments", {})
+            residual_summary["keplerian_rms_before_ms"] = kep_fit.get("rms_before_ms")
+            residual_summary["keplerian_rms_after_ms"] = kep_fit.get("rms_after_ms")
+
+        return residual_summary
+
+    except ImportError:
+        logger.info("RadVel not available; falling back to sinusoidal subtraction")
+    except Exception as e:
+        logger.warning("Keplerian fit failed (%s); falling back to sinusoidal", e)
+
+    # Fallback: sinusoidal subtraction
+    from src.rv_data import rv_residual_analysis
+
+    residual = rv_residual_analysis(
+        rv_data["time"], rv_data["rv"], rv_data["rv_err"],
+        known_periods=known_periods,
+        instruments=rv_data.get("instrument"),
+    )
+
+    return {
+        "method": "sinusoidal",
+        "known_periods_used": residual["known_periods_used"],
+        "offset_correction": residual.get("offset_correction"),
+        "sinusoid_subtraction": residual.get("sinusoid_subtraction"),
+        "original_best_period": residual["original_periodogram"].get("best_period"),
+        "original_fap": residual["original_periodogram"].get("fap"),
+        "residual_best_period": residual["residual_periodogram"].get("best_period"),
+        "residual_fap": residual["residual_periodogram"].get("fap"),
+        "residual_peaks": residual["residual_periodogram"].get("peaks", []),
+    }
+
+
+def _build_planet_params(known_periods, target):
+    """Build RadVel planet_params from known periods and reference data.
+
+    Uses literature K amplitudes and eccentricities when available
+    (from fallback data), otherwise uses generic initial guesses.
+    """
+    # Reference K and e from Nari et al. (2025) for HD 20794
+    reference_by_period = {}
+    hd = target.get("hd")
+    fallback = _known_planets_fallback(target)
+    if fallback:
+        for planet in fallback:
+            if planet.get("confirmed") is False:
+                continue
+            p = planet.get("period_days")
+            if p is not None:
+                reference_by_period[p] = {
+                    "k": planet.get("k_ms", 1.0),
+                    "e": planet.get("eccentricity", 0.0),
+                }
+
+    # Estimate a reasonable tc from the data
+    # Use a generic epoch; MAP will adjust
+    tc_base = 2456000.0
+
+    planet_params = []
+    for period in known_periods:
+        # Look for matching reference data (within 1% period match)
+        ref = None
+        for ref_period, ref_data in reference_by_period.items():
+            if abs(period - ref_period) / ref_period < 0.01:
+                ref = ref_data
+                break
+
+        if ref is not None:
+            k_init = ref["k"] if ref["k"] is not None else 1.0
+            e_init = ref["e"]
+        else:
+            k_init = 1.0  # generic guess
+            e_init = 0.05
+
+        planet_params.append({
+            "period": period,
+            "tc": tc_base,
+            "e": e_init,
+            "w": 0.0,
+            "k": k_init,
+        })
+
+    return planet_params
 
 
 def _run_injection_recovery(rv_raw, stellar_mass, n_trials=50,
@@ -682,10 +846,29 @@ def _build_summary(result):
     # RV residuals
     resid = result.get("rv_residual_analysis")
     if resid and resid.get("residual_best_period"):
+        method = resid.get("method", "sinusoidal")
         summary["findings"].append(
-            f"Residual RV best period: {resid['residual_best_period']:.2f} d "
-            f"(after subtracting {len(resid.get('known_periods_used', []))} known planets)"
+            f"RV analysis ({method}): residual best period "
+            f"{resid['residual_best_period']:.2f} d "
+            f"(after subtracting {len(resid.get('known_periods_used', []))} "
+            f"known planets)"
         )
+        # Add Keplerian-specific findings
+        kep_rms_before = resid.get("keplerian_rms_before_ms")
+        kep_rms_after = resid.get("keplerian_rms_after_ms")
+        if kep_rms_before and kep_rms_after:
+            summary["findings"].append(
+                f"Keplerian fit RMS: {kep_rms_before:.2f} -> "
+                f"{kep_rms_after:.2f} m/s"
+            )
+        kep_planets = resid.get("keplerian_planets", [])
+        if kep_planets:
+            k_strs = [f"P={p['period']:.1f}d K={p['k']:.3f}m/s"
+                       for p in kep_planets]
+            summary["findings"].append(
+                f"Fitted K amplitudes: {', '.join(k_strs)}"
+            )
+
         summary["open_questions"].append(
             f"Is the {resid['residual_best_period']:.2f}-day residual signal "
             "stellar activity, an alias, or a new planet?"
@@ -835,8 +1018,10 @@ def _format_deep_dive_markdown(result):
     # Residual analysis
     resid = result.get("rv_residual_analysis")
     if resid:
-        lines.append("## RV Residual Analysis")
+        method = resid.get("method", "sinusoidal")
+        lines.append(f"## RV Residual Analysis ({method})")
         lines.append("")
+        lines.append(f"- Method: {method}")
         lines.append(f"- Known periods subtracted: {resid.get('known_periods_used')}")
         sub = resid.get("sinusoid_subtraction", {})
         if sub:
@@ -844,6 +1029,34 @@ def _format_deep_dive_markdown(result):
             lines.append(f"- RMS after: {sub.get('rms_after_ms')} m/s")
         lines.append(f"- Residual best period: {resid.get('residual_best_period')} days")
         lines.append(f"- Residual FAP: {resid.get('residual_fap')}")
+
+        # Keplerian-specific results
+        kep_planets = resid.get("keplerian_planets")
+        if kep_planets:
+            lines.append("")
+            lines.append("### Fitted Keplerian Parameters")
+            lines.append("")
+            lines.append("| Planet | Period (d) | K (m/s) | e | w (rad) |")
+            lines.append("|--------|-----------|---------|---|---------|")
+            for i, p in enumerate(kep_planets):
+                lines.append(
+                    f"| {i+1} | {p['period']:.3f} | {p['k']:.4f} | "
+                    f"{p['e']:.4f} | {p['w']:.4f} |"
+                )
+
+        kep_inst = resid.get("keplerian_instruments")
+        if kep_inst:
+            lines.append("")
+            lines.append("### Instrument Offsets (Keplerian)")
+            lines.append("")
+            lines.append("| Instrument | Gamma (m/s) | Jitter (m/s) |")
+            lines.append("|------------|-------------|--------------|")
+            for inst, data in sorted(kep_inst.items()):
+                lines.append(
+                    f"| {inst} | {data['gamma']:.3f} | "
+                    f"{data['jitter']:.3f} |"
+                )
+
         lines.append("")
 
     # PMa

@@ -190,3 +190,21 @@ sensitivity map. The map covers periods from 0.5 to 10,000 days.
 5. **PMa companion**: The significant PMa and elevated RUWE strongly suggest an outer
    companion. Mass and separation constraints from astrometric analysis could guide
    future direct imaging or long-baseline RV searches.
+
+---
+
+## Literature Comparison (added Phase 7b.2)
+
+A comprehensive literature review (see `docs/phase7b2_literature_gaps.md`) revealed:
+
+1. **414-day period SOLVED**: Beat frequency between annual observing cadence (365.25d)
+   and stellar magnetic cycle (~3000d) produces a spurious peak at ~416d. Not a planet.
+2. **147-day planet NOT CONFIRMED**: Nari et al. (2025) found adding this signal
+   worsened model evidence. Our pipeline incorrectly included it.
+3. **True K amplitudes are sub-1 m/s**: b=0.614, c=0.502, d=0.567 m/s (Nari 2025).
+   Our sinusoidal fitter returned 400-750 m/s -- fitting offset structure, not planets.
+4. **CORAVEL should be excluded**: 16 measurements at 280 m/s error dominate the RMS.
+   Nari 2025 excluded these entirely.
+5. **Planet d has significant eccentricity**: e=0.45, which sinusoidal model cannot capture.
+
+Phase 7b.2 plan addresses these gaps via RadVel-based joint Keplerian fitting.

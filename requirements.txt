@@ -4,3 +4,4 @@ astroquery
 pytest
 lightkurve
 dace-query
+radvel
