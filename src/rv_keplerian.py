@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 
 
 def fit_keplerian(time, rv, rv_err, instruments, planet_params,
-                  exclude_instruments=None, run_mcmc=False,
-                  mcmc_nwalkers=50, mcmc_nsteps=1000):
+                  exclude_instruments=None, fix_eccentricities=False,
+                  run_mcmc=False, mcmc_nwalkers=50, mcmc_nsteps=1000):
     """Fit a joint Keplerian model to multi-instrument RV data.
 
     Constructs a RadVel model with N Keplerian orbits plus per-instrument
@@ -49,6 +49,10 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
         - k: RV semi-amplitude (m/s)
     exclude_instruments : list[str], optional
         Instruments to exclude (e.g., ['CORAVEL-S']).
+    fix_eccentricities : bool
+        If True, keep eccentricities fixed at initial values throughout
+        the fit. Recommended for sub-m/s signals where the data cannot
+        independently constrain e (e.g., HD 20794). Default: False.
     run_mcmc : bool
         If True, run MCMC after MAP for uncertainties.
     mcmc_nwalkers : int
@@ -104,9 +108,22 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
     inst_arr = np.array(instruments)
 
     rms_before = float(np.std(rv))
+
+    # Pre-center: subtract per-instrument median RV so RadVel works
+    # near zero instead of ~88 km/s. This avoids numerical precision
+    # issues when fitting sub-m/s signals on km/s baselines.
+    inst_medians = {}
+    rv_centered = rv.copy()
+    for inst in unique_instruments:
+        mask = inst_arr == inst
+        med = float(np.median(rv[mask]))
+        inst_medians[inst] = med
+        rv_centered[mask] -= med
+
     logger.info("Keplerian fit: %d planets, %d measurements, %d instruments, "
-                "input RMS=%.2f m/s",
-                n_planets, len(time), len(unique_instruments), rms_before)
+                "input RMS=%.2f m/s (centered RMS=%.2f m/s)",
+                n_planets, len(time), len(unique_instruments),
+                rms_before, float(np.std(rv_centered)))
 
     # Build RadVel parameter set
     params = radvel.Parameters(n_planets, basis='per tc e w k')
@@ -127,31 +144,30 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
     time_base = float(np.median(time))
     mod = radvel.RVModel(params, time_base=time_base)
 
-    # Create per-instrument likelihoods
+    # Create per-instrument likelihoods on centered data
     likelihoods = []
     for inst in unique_instruments:
         mask = inst_arr == inst
         inst_time = time[mask]
-        inst_rv = rv[mask]
+        inst_rv = rv_centered[mask]
         inst_rv_err = rv_err[mask]
 
         like = radvel.likelihood.RVLikelihood(
             mod, inst_time, inst_rv, inst_rv_err,
             suffix=f'_{inst}',
         )
-        # Set initial gamma to instrument median
-        like.params[f'gamma_{inst}'] = radvel.Parameter(
-            value=float(np.median(inst_rv))
-        )
+        # Gamma starts at 0 (data is pre-centered)
+        like.params[f'gamma_{inst}'] = radvel.Parameter(value=0.0)
         # Set initial jitter to instrument median error
         like.params[f'jit_{inst}'] = radvel.Parameter(
             value=float(np.median(inst_rv_err))
         )
         likelihoods.append(like)
-        logger.info("  Instrument %s: %d pts, median RV=%.1f m/s, "
-                     "median err=%.3f m/s",
+        logger.info("  Instrument %s: %d pts, median RV=%.1f m/s "
+                     "(raw median=%.1f), median err=%.3f m/s",
                      inst, int(np.sum(mask)),
                      float(np.median(inst_rv)),
+                     inst_medians[inst],
                      float(np.median(inst_rv_err)))
 
     # Composite likelihood
@@ -172,31 +188,56 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
     post.params['dvdt'].vary = False
     post.params['curv'].vary = False
 
-    # Fix periods (well-constrained from literature) to help convergence
+    # Pass 1: Fix periods AND eccentricities to help convergence.
+    # With sub-m/s signals buried in km/s offsets, the optimizer must
+    # first find the correct gamma (offset) values before it can
+    # meaningfully fit orbital parameters.
     for i in range(n_planets):
         idx = i + 1
         post.params[f'per{idx}'].vary = False
+        post.params[f'e{idx}'].vary = False
+        post.params[f'w{idx}'].vary = False
 
-    # MAP optimization
-    logger.info("Running MAP optimization...")
+    logger.info("Running MAP optimization (pass 1: fixed P, e, w)...")
     try:
         post = radvel.fitting.maxlike_fitting(post, verbose=False)
     except Exception as e:
-        logger.error("MAP fitting failed: %s", e)
+        logger.error("MAP fitting pass 1 failed: %s", e)
         return {"status": "error", "error": f"MAP fitting failed: {e}"}
 
-    logger.info("MAP optimization complete")
+    # Pass 2: Free eccentricities and w (unless fix_eccentricities),
+    # keep periods fixed
+    if not fix_eccentricities:
+        for i in range(n_planets):
+            idx = i + 1
+            post.params[f'e{idx}'].vary = True
+            post.params[f'w{idx}'].vary = True
+        logger.info("Running MAP optimization (pass 2: free e, w)...")
+    else:
+        # Even with fixed e, free w for phase adjustment
+        for i in range(n_planets):
+            idx = i + 1
+            post.params[f'w{idx}'].vary = True
+        logger.info("Running MAP optimization (pass 2: free w, e fixed)...")
 
-    # Now allow periods to vary and re-optimize
+    try:
+        post = radvel.fitting.maxlike_fitting(post, verbose=False)
+    except Exception as e:
+        logger.warning("MAP pass 2 failed: %s; using pass 1 solution", e)
+
+    # Pass 3: Free periods for final refinement
     for i in range(n_planets):
         idx = i + 1
         post.params[f'per{idx}'].vary = True
 
+    logger.info("Running MAP optimization (pass 3: free P)...")
     try:
         post = radvel.fitting.maxlike_fitting(post, verbose=False)
     except Exception as e:
-        logger.warning("Second MAP pass (free periods) failed: %s; "
-                       "using fixed-period solution", e)
+        logger.warning("MAP pass 3 (free periods) failed: %s; "
+                       "using pass 2 solution", e)
+
+    logger.info("MAP optimization complete")
 
     # Optional MCMC
     mcmc_chains = None
@@ -238,26 +279,36 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
                      idx, planets_result[-1]["period"],
                      k_val, planets_result[-1]["e"])
 
-    # Instrument parameters
+    # Instrument parameters -- add back the pre-subtracted medians
+    # so reported gammas are in the original absolute RV frame
     instruments_result = {}
     for inst in unique_instruments:
-        gamma = float(fitted_params[f'gamma_{inst}'].value)
+        gamma_centered = float(fitted_params[f'gamma_{inst}'].value)
+        gamma_absolute = gamma_centered + inst_medians[inst]
         jit = float(fitted_params[f'jit_{inst}'].value)
-        instruments_result[inst] = {"gamma": gamma, "jitter": jit}
-        logger.info("  %s: gamma=%.3f m/s, jitter=%.3f m/s",
-                     inst, gamma, jit)
+        # Clamp tiny negative jitter at optimizer boundary to zero
+        if jit < 0 and jit > -1e-6:
+            jit = 0.0
+        instruments_result[inst] = {
+            "gamma": gamma_absolute,
+            "gamma_centered": gamma_centered,
+            "jitter": jit,
+        }
+        logger.info("  %s: gamma=%.3f m/s (centered: %.3f), jitter=%.3f m/s",
+                     inst, gamma_absolute, gamma_centered, jit)
 
-    # Compute model and residuals
+    # Compute model and residuals on centered data
     model_rv = np.zeros_like(time)
     residuals = np.zeros_like(time)
 
     for inst in unique_instruments:
         mask = inst_arr == inst
         inst_time = time[mask]
-        # Model = Keplerian + gamma
-        model_at_inst = mod(inst_time) + instruments_result[inst]["gamma"]
+        # Model = Keplerian + gamma_centered (in centered frame)
+        gamma_c = instruments_result[inst]["gamma_centered"]
+        model_at_inst = mod(inst_time) + gamma_c
         model_rv[mask] = model_at_inst
-        residuals[mask] = rv[mask] - model_at_inst
+        residuals[mask] = rv_centered[mask] - model_at_inst
 
     rms_after = float(np.std(residuals))
     logger.info("Keplerian fit: RMS %.2f -> %.2f m/s", rms_before, rms_after)
@@ -289,6 +340,7 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
 
 def keplerian_residual_analysis(time, rv, rv_err, instruments, planet_params,
                                  exclude_instruments=None,
+                                 fix_eccentricities=False,
                                  min_period=1.0, max_period=None,
                                  run_mcmc=False):
     """Full Keplerian residual analysis: fit + periodogram on residuals.
@@ -344,6 +396,7 @@ def keplerian_residual_analysis(time, rv, rv_err, instruments, planet_params,
     kep_result = fit_keplerian(
         time, rv, rv_err, instruments, planet_params,
         exclude_instruments=exclude_instruments,
+        fix_eccentricities=fix_eccentricities,
         run_mcmc=run_mcmc,
     )
 

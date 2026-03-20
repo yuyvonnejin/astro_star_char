@@ -715,13 +715,18 @@ def rv_to_planet_mass(k_ms, period_days, stellar_mass_msun=1.0, eccentricity=0.0
     return m_planet_kg / M_earth
 
 
-def rv_filter_instruments(rv_data, exclude=None, min_precision_ms=None):
-    """Filter RV data by instrument name or precision threshold.
+def rv_filter_instruments(rv_data, exclude=None, min_precision_ms=None,
+                          sigma_clip=5.0, max_scatter_factor=50.0):
+    """Filter RV data by instrument name, precision, and outlier rejection.
 
     Removes measurements from instruments that are too imprecise for
     precision RV analysis. Default threshold of 50 m/s catches legacy
     instruments like CORAVEL (~280 m/s median error) while keeping
     modern spectrographs (HARPS ~1 m/s, ESPRESSO ~0.25 m/s).
+
+    Also applies per-instrument sigma-clipping to remove catastrophic
+    outliers (e.g., pipeline failures returning -120 km/s when systemic
+    velocity is +88 km/s). Uses MAD-based clipping for robustness.
 
     Parameters
     ----------
@@ -733,6 +738,16 @@ def rv_filter_instruments(rv_data, exclude=None, min_precision_ms=None):
     min_precision_ms : float, optional
         Exclude instruments whose median RV error exceeds this threshold
         (m/s). Default: None (no precision filtering). Suggested: 50.0.
+    sigma_clip : float, optional
+        Remove measurements deviating more than this many MAD-sigmas
+        from the per-instrument median. Default: 5.0. Set to None to
+        disable outlier rejection.
+    max_scatter_factor : float, optional
+        After sigma-clipping, exclude instruments whose RV scatter
+        (MAD) exceeds median_error * max_scatter_factor. This catches
+        instruments with systematic issues where the scatter far exceeds
+        the reported precision (e.g., ESPRESSO18 with 0.15 m/s errors
+        but 775 m/s scatter). Default: 50.0. Set to None to disable.
 
     Returns
     -------
@@ -765,18 +780,74 @@ def rv_filter_instruments(rv_data, exclude=None, min_precision_ms=None):
                             inst, median_err, min_precision_ms,
                             int(np.sum(mask)))
 
-    if not exclude:
-        logger.info("No instruments excluded; returning original data")
+    # Build keep mask for instrument exclusion
+    keep = np.ones(len(time), dtype=bool)
+    if exclude:
+        for exc in exclude:
+            keep &= (inst_arr != exc)
+
+    # Apply per-instrument sigma-clipping (MAD-based for outlier robustness)
+    n_clipped = 0
+    if sigma_clip is not None:
+        remaining_insts = sorted(set(
+            instruments[i] for i in range(len(keep)) if keep[i]
+        ))
+        for inst in remaining_insts:
+            mask = (inst_arr == inst) & keep
+            if np.sum(mask) < 10:
+                continue
+            inst_rv = rv[mask]
+            median_rv = np.median(inst_rv)
+            mad = np.median(np.abs(inst_rv - median_rv))
+            # MAD to sigma: sigma ~ 1.4826 * MAD for normal distribution
+            mad_sigma = 1.4826 * mad
+            if mad_sigma < 1e-6:
+                continue
+            outlier = np.abs(inst_rv - median_rv) > sigma_clip * mad_sigma
+            n_out = int(np.sum(outlier))
+            if n_out > 0:
+                # Map back to full array indices
+                inst_indices = np.where(mask)[0]
+                outlier_indices = inst_indices[outlier]
+                keep[outlier_indices] = False
+                n_clipped += n_out
+                logger.info("Sigma-clipped %d outliers from %s "
+                            "(%.1f-sigma, MAD=%.2f m/s, median=%.1f m/s)",
+                            n_out, inst, sigma_clip, mad_sigma, median_rv)
+
+    # After sigma-clipping, check per-instrument scatter vs precision.
+    # Instruments with scatter >> reported errors have systematic issues.
+    if max_scatter_factor is not None:
+        remaining_insts = sorted(set(
+            instruments[i] for i in range(len(keep)) if keep[i]
+        ))
+        for inst in remaining_insts:
+            mask = (inst_arr == inst) & keep
+            n_inst = int(np.sum(mask))
+            if n_inst < 10:
+                continue
+            inst_rv = rv[mask]
+            mad = float(np.median(np.abs(inst_rv - np.median(inst_rv))))
+            mad_sigma = 1.4826 * mad
+            median_err = float(np.median(rv_err[mask]))
+            if median_err > 0 and mad_sigma > max_scatter_factor * median_err:
+                keep[mask] = False
+                if inst not in exclude:
+                    exclude.append(inst)
+                logger.info("Excluding %s: post-clip scatter %.1f m/s >> "
+                            "median error %.3f m/s (ratio=%.0f, "
+                            "threshold=%.0f; %d measurements removed)",
+                            inst, mad_sigma, median_err,
+                            mad_sigma / median_err, max_scatter_factor,
+                            n_inst)
+
+    n_removed = int(np.sum(~keep))
+    if not exclude and n_clipped == 0:
+        logger.info("No instruments excluded, no outliers clipped")
         result = dict(rv_data)
         result["excluded_instruments"] = []
         return result
 
-    # Build keep mask
-    keep = np.ones(len(time), dtype=bool)
-    for exc in exclude:
-        keep &= (inst_arr != exc)
-
-    n_removed = int(np.sum(~keep))
     if n_removed == len(time):
         logger.error("All measurements excluded -- returning original data")
         result = dict(rv_data)
@@ -804,8 +875,9 @@ def rv_filter_instruments(rv_data, exclude=None, min_precision_ms=None):
     baseline = float(time_f[-1] - time_f[0]) if len(time_f) > 1 else 0.0
 
     logger.info("Filtered RV data: %d -> %d measurements "
-                "(removed %d from %s)",
-                len(time), len(time_f), n_removed, exclude)
+                "(removed %d: %d instrument-excluded, %d sigma-clipped)",
+                len(time), len(time_f), n_removed,
+                n_removed - n_clipped, n_clipped)
 
     return {
         "time": time_f,

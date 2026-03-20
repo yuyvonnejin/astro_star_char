@@ -88,7 +88,7 @@ def run_deep_dive(target_name, max_tess_sectors=26,
 
     # Step 3: Known planets query
     result["known_planets"] = _run_known_planets(target)
-    known_periods = _extract_known_periods(result["known_planets"])
+    known_periods = _extract_known_periods(result["known_planets"], target=target)
 
     # Step 4: TESS light curve + transit search
     tess_result = _run_tess_analysis(target, stellar_mass, stellar_radius,
@@ -308,25 +308,53 @@ def _known_planets_fallback(target):
     return None
 
 
-def _extract_known_periods(known_planets_result):
+def _extract_known_periods(known_planets_result, target=None):
     """Extract orbital periods from confirmed known planets.
 
     Skips planets flagged as disputed (confirmed=False) to avoid
-    fitting spurious signals. This matters for HD 20794 where the
-    147-day "planet e" is disputed by Nari et al. (2025).
+    fitting spurious signals. When planets come from NASA (no confirmed
+    field), cross-references with fallback literature data to identify
+    disputed periods. This matters for HD 20794 where the 147-day
+    "planet e" is disputed by Nari et al. (2025).
     """
+    # Build set of disputed periods from fallback literature data
+    disputed_periods = set()
+    if target is not None:
+        fallback = _known_planets_fallback(target)
+        if fallback:
+            for planet in fallback:
+                if planet.get("confirmed") is False:
+                    p = planet.get("period_days")
+                    if p is not None:
+                        disputed_periods.add(p)
+
     periods = []
     if known_planets_result and known_planets_result.get("planets"):
         for planet in known_planets_result["planets"]:
-            # Skip disputed planets
+            # Skip planets explicitly flagged as disputed
             if planet.get("confirmed") is False:
                 logger.info("Skipping disputed planet %s (P=%.1f d)",
                             planet.get("pl_name", "?"),
                             planet.get("period_days", 0))
                 continue
+
             p = planet.get("period_days")
-            if p is not None and p > 0:
+            if p is None or p <= 0:
+                continue
+
+            # Cross-reference with literature disputed periods
+            is_disputed = False
+            for dp in disputed_periods:
+                if abs(float(p) - dp) / dp < 0.01:
+                    logger.info("Skipping disputed planet %s (P=%.1f d) "
+                                "-- rejected by literature",
+                                planet.get("pl_name", "?"), p)
+                    is_disputed = True
+                    break
+
+            if not is_disputed:
                 periods.append(float(p))
+
     if periods:
         logger.info("Known planet periods: %s days",
                      ", ".join(f"{p:.2f}" for p in periods))
@@ -554,13 +582,21 @@ def _run_keplerian_or_sinusoidal(rv_data, known_periods, target):
         from src.rv_keplerian import keplerian_residual_analysis
 
         # Build planet_params from known periods + reference data
-        planet_params = _build_planet_params(known_periods, target)
+        planet_params = _build_planet_params(known_periods, target,
+                                              time=rv_data["time"])
 
-        logger.info("Using RadVel Keplerian fit (%d planets)", len(planet_params))
+        # Fix eccentricities when literature reference data is available.
+        # Sub-m/s signals cannot independently constrain e from the data;
+        # Nari et al. (2025) needed YARARA + GP + FIP to do so.
+        has_reference = _known_planets_fallback(target) is not None
+        fix_e = has_reference
+        logger.info("Using RadVel Keplerian fit (%d planets, fix_e=%s)",
+                    len(planet_params), fix_e)
         residual = keplerian_residual_analysis(
             rv_data["time"], rv_data["rv"], rv_data["rv_err"],
             instruments=rv_data["instrument"],
             planet_params=planet_params,
+            fix_eccentricities=fix_e,
         )
 
         # Build summary (strip large arrays)
@@ -613,15 +649,24 @@ def _run_keplerian_or_sinusoidal(rv_data, known_periods, target):
     }
 
 
-def _build_planet_params(known_periods, target):
+def _build_planet_params(known_periods, target, time=None):
     """Build RadVel planet_params from known periods and reference data.
 
     Uses literature K amplitudes and eccentricities when available
     (from fallback data), otherwise uses generic initial guesses.
+
+    Parameters
+    ----------
+    known_periods : list[float]
+        Known planet periods (days).
+    target : dict
+        Target info dict.
+    time : array-like, optional
+        RV time array (RJD or BJD). Used to set tc in the correct
+        time system. If None, uses median of a reasonable RJD range.
     """
     # Reference K and e from Nari et al. (2025) for HD 20794
     reference_by_period = {}
-    hd = target.get("hd")
     fallback = _known_planets_fallback(target)
     if fallback:
         for planet in fallback:
@@ -634,9 +679,18 @@ def _build_planet_params(known_periods, target):
                     "e": planet.get("eccentricity", 0.0),
                 }
 
-    # Estimate a reasonable tc from the data
-    # Use a generic epoch; MAP will adjust
-    tc_base = 2456000.0
+    # Set tc in the same time system as the data.
+    # DACE returns RJD (JD - 2400000), so tc must also be in RJD.
+    # Use the median observation time as a generic starting epoch;
+    # RadVel's MAP optimizer will adjust tc for each planet.
+    if time is not None:
+        tc_base = float(np.median(np.asarray(time, dtype=float)))
+    else:
+        # Fallback: approximate RJD for ~2015 epoch
+        tc_base = 57000.0
+
+    logger.info("Building planet params: tc_base=%.1f (data time system)",
+                tc_base)
 
     planet_params = []
     for period in known_periods:
