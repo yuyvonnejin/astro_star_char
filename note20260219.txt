@@ -1,0 +1,1 @@
+With a fresh pair of eye, inspect phase7b2 and see if we have properly executed. Check if packages are installed; run new results on HD70294 and compare. 
