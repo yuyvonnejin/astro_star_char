@@ -28,7 +28,7 @@ def run_deep_dive(target_name, max_tess_sectors=26,
                    injection_n_trials=50, injection_n_periods=15,
                    injection_n_amplitudes=10,
                    save_report=True, bin_nightly=True,
-                   decorrelate_activity=True):
+                   decorrelate_activity=True, use_gp=True):
     """Run comprehensive deep-dive analysis on a single target star.
 
     Parameters
@@ -54,6 +54,10 @@ def run_deep_dive(target_name, max_tess_sectors=26,
         decorrelate the residuals against activity indicators
         (FWHM, BIS, S-index) and refit. First-order removal of
         rotation and magnetic cycle signals.
+    use_gp : bool
+        If True (default), run a final Keplerian fit with a
+        quasi-periodic GP activity model on the (decorrelated) RVs.
+        Requires nightly binning to keep the O(N^3) GP tractable.
 
     Returns
     -------
@@ -110,7 +114,8 @@ def run_deep_dive(target_name, max_tess_sectors=26,
     # Step 5: RV data retrieval and multi-planet analysis
     rv_result = _run_rv_analysis(target, known_periods,
                                  bin_nightly=bin_nightly,
-                                 decorrelate_activity=decorrelate_activity)
+                                 decorrelate_activity=decorrelate_activity,
+                                 use_gp=use_gp)
     result["rv_data"] = rv_result.get("rv_data")
     result["rv_residual_analysis"] = rv_result.get("residual_analysis")
 
@@ -499,7 +504,7 @@ def _run_tess_analysis(target, stellar_mass, stellar_radius, stellar_teff,
 
 
 def _run_rv_analysis(target, known_periods, bin_nightly=True,
-                     decorrelate_activity=True):
+                     decorrelate_activity=True, use_gp=True):
     """Run RV data retrieval and multi-planet residual analysis.
 
     Uses Keplerian fitting via RadVel if available, falls back to
@@ -564,6 +569,7 @@ def _run_rv_analysis(target, known_periods, bin_nightly=True,
             residual_summary = _run_keplerian_or_sinusoidal(
                 rv_data_filtered, known_periods, target,
                 decorrelate_activity=decorrelate_activity,
+                use_gp=use_gp,
             )
 
         return {
@@ -582,12 +588,14 @@ def _run_rv_analysis(target, known_periods, bin_nightly=True,
 
 
 def _run_keplerian_or_sinusoidal(rv_data, known_periods, target,
-                                 decorrelate_activity=True):
+                                 decorrelate_activity=True, use_gp=True):
     """Try Keplerian fit first, fall back to sinusoidal subtraction.
 
-    With decorrelate_activity=True and activity indicators present,
-    runs fit -> residual decorrelation -> refit, and keeps the refit
-    if it improves the residual RMS.
+    Stages: plain Keplerian fit -> (optional) residual decorrelation
+    against activity indicators + refit -> (optional) final fit with
+    quasi-periodic GP activity model. Each optional stage is kept
+    only if it succeeds (decorrelation additionally requires an RMS
+    improvement).
 
     Parameters
     ----------
@@ -599,6 +607,8 @@ def _run_keplerian_or_sinusoidal(rv_data, known_periods, target,
         Target info dict.
     decorrelate_activity : bool
         Enable the decorrelation + refit pass.
+    use_gp : bool
+        Enable the final GP-model fit.
 
     Returns
     -------
@@ -632,6 +642,7 @@ def _run_keplerian_or_sinusoidal(rv_data, known_periods, target,
         # Activity decorrelation pass: regress fit-1 residuals on
         # indicators, subtract, refit. Keep refit only if RMS improves.
         decorr_summary = None
+        rv_used = rv_data["rv"]
         indicators = rv_data.get("indicators") or {}
         if (decorrelate_activity and indicators
                 and kep_fit.get("status") == "ok"
@@ -666,6 +677,7 @@ def _run_keplerian_or_sinusoidal(rv_data, known_periods, target,
                     }
                     residual = residual2
                     kep_fit = kep_fit2
+                    rv_used = decorr["rv_corrected"]
                     logger.info("Decorrelation kept: RMS %.2f -> %.2f m/s",
                                 rms1, rms2)
                 else:
@@ -673,6 +685,44 @@ def _run_keplerian_or_sinusoidal(rv_data, known_periods, target,
                                 "(%.2f -> %s); keeping original fit",
                                 rms1 if rms1 is not None else -1,
                                 rms2)
+
+        # Final pass: quasi-periodic GP activity model on top of the
+        # (possibly decorrelated) RVs. Captures the nonlinear part of
+        # rotation / magnetic cycle signals that linear decorrelation
+        # cannot. O(N^3) -- intended for nightly-binned data.
+        gp_summary = None
+        if use_gp and kep_fit.get("status") == "ok":
+            n_pts = len(rv_data["time"])
+            if n_pts > 3000:
+                logger.info("Skipping GP fit: %d points too many for "
+                            "O(N^3) kernel (bin nightly first)", n_pts)
+            else:
+                logger.info("Running final Keplerian + GP fit "
+                            "(%d points)...", n_pts)
+                residual_gp = keplerian_residual_analysis(
+                    rv_data["time"], rv_used, rv_data["rv_err"],
+                    instruments=rv_data["instrument"],
+                    planet_params=planet_params,
+                    fix_eccentricities=fix_e,
+                    use_gp=True,
+                )
+                kep_fit_gp = residual_gp.get("keplerian_fit", {})
+                if kep_fit_gp.get("status") == "ok":
+                    gp_summary = {
+                        "hyperparameters": kep_fit_gp.get("gp"),
+                        "rms_before_gp_ms": kep_fit.get("rms_after_ms"),
+                        "rms_after_gp_ms": kep_fit_gp.get("rms_after_ms"),
+                    }
+                    residual = residual_gp
+                    kep_fit = kep_fit_gp
+                    logger.info("GP fit kept: RMS %.2f m/s, "
+                                "hyperparams %s",
+                                kep_fit_gp.get("rms_after_ms"),
+                                kep_fit_gp.get("gp"))
+                else:
+                    logger.warning("GP fit failed (%s); keeping "
+                                   "non-GP result",
+                                   kep_fit_gp.get("error"))
         residual_summary = {
             "method": "keplerian",
             "known_periods_used": residual["known_periods_used"],
@@ -693,6 +743,7 @@ def _run_keplerian_or_sinusoidal(rv_data, known_periods, target,
             residual_summary["keplerian_rms_after_ms"] = kep_fit.get("rms_after_ms")
 
         residual_summary["activity_decorrelation"] = decorr_summary
+        residual_summary["gp_activity_model"] = gp_summary
 
         return residual_summary
 

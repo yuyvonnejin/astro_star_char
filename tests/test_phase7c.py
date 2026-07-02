@@ -373,6 +373,96 @@ class TestRVDecorrelateActivity:
             rv_decorrelate_activity(data, residuals=np.zeros(10))
 
 
+class TestKeplerianGP:
+    """Tests for the quasi-periodic GP activity model (7c.3)."""
+
+    def _make_planet_plus_activity(self, n=150, seed=13):
+        """Planet + smooth quasi-periodic activity + white noise."""
+        radvel = pytest.importorskip("radvel")
+        rng = np.random.default_rng(seed)
+        time = np.sort(rng.uniform(50000, 52000, n))
+        period, k_true, tc_true = 20.0, 3.0, 51000.0
+
+        params = radvel.Parameters(1, basis='per tc e w k')
+        params['per1'] = radvel.Parameter(value=period)
+        params['tc1'] = radvel.Parameter(value=tc_true)
+        params['e1'] = radvel.Parameter(value=0.0)
+        params['w1'] = radvel.Parameter(value=0.0)
+        params['k1'] = radvel.Parameter(value=k_true)
+        params['dvdt'] = radvel.Parameter(value=0.0)
+        params['curv'] = radvel.Parameter(value=0.0)
+        mod = radvel.RVModel(params, time_base=51000.0)
+
+        # Activity: slow quasi-periodic signal, amplitude ~ K
+        activity = 2.5 * np.sin(2 * np.pi * time / 900.0)
+        activity += 1.0 * np.sin(2 * np.pi * time / 450.0 + 0.7)
+
+        rv = mod(time) + activity + rng.normal(0, 0.4, n)
+        rv_err = np.full(n, 0.4)
+        planet_init = [{"period": period, "tc": tc_true,
+                        "e": 0.0, "w": 0.0, "k": 2.0}]
+        return time, rv, rv_err, planet_init, k_true
+
+    def test_gp_fit_runs_and_reports_hyperparams(self):
+        from src.rv_keplerian import fit_keplerian
+
+        time, rv, rv_err, planet_init, k_true = \
+            self._make_planet_plus_activity()
+        result = fit_keplerian(
+            time, rv, rv_err, instruments=["HARPS"] * len(time),
+            planet_params=planet_init,
+            use_gp=True,
+            gp_hyperparams={
+                "gp_per": {"value": 900.0, "bounds": (300.0, 3000.0)},
+                "gp_explength": {"value": 2000.0,
+                                 "bounds": (200.0, 20000.0)},
+            },
+        )
+        assert result["status"] == "ok"
+        assert result["method"] == "radvel_keplerian_gp"
+        assert result["gp"] is not None
+        assert set(result["gp"]) == {"gp_per", "gp_perlength",
+                                     "gp_explength", "gp_amp"}
+
+    def test_gp_improves_k_recovery(self):
+        """GP fit recovers K better than plain fit under activity."""
+        from src.rv_keplerian import fit_keplerian
+
+        time, rv, rv_err, planet_init, k_true = \
+            self._make_planet_plus_activity()
+        insts = ["HARPS"] * len(time)
+
+        plain = fit_keplerian(time, rv, rv_err, insts,
+                              planet_params=planet_init)
+        gp = fit_keplerian(
+            time, rv, rv_err, insts, planet_params=planet_init,
+            use_gp=True,
+            gp_hyperparams={
+                "gp_per": {"value": 900.0, "bounds": (300.0, 3000.0)},
+            },
+        )
+        assert plain["status"] == "ok" and gp["status"] == "ok"
+        err_plain = abs(abs(plain["planets"][0]["k"]) - k_true)
+        err_gp = abs(abs(gp["planets"][0]["k"]) - k_true)
+        assert err_gp <= err_plain + 0.1
+        assert err_gp < 0.5
+        # GP should also shrink the residual RMS
+        assert gp["rms_after_ms"] < plain["rms_after_ms"]
+
+    def test_no_gp_path_unchanged(self):
+        """use_gp=False returns the classic method label and no gp key."""
+        from src.rv_keplerian import fit_keplerian
+
+        time, rv, rv_err, planet_init, _ = \
+            self._make_planet_plus_activity(n=100)
+        result = fit_keplerian(time, rv, rv_err,
+                               instruments=["HARPS"] * len(time),
+                               planet_params=planet_init)
+        assert result["status"] == "ok"
+        assert result["method"] == "radvel_keplerian"
+        assert result["gp"] is None
+
+
 class TestIndicatorThreading:
     """Indicators must survive filtering and binning."""
 

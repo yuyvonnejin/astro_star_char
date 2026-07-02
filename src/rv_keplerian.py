@@ -34,9 +34,23 @@ def _sync_vary_flags(post):
     post.list_vary_params()
 
 
+# Default quasi-periodic GP hyperparameters, tuned for a solar-type
+# magnetic activity cycle (HD 20794: ~3000 d, Nari et al. 2025).
+# Values: initial guess; bounds: HardBounds prior ranges.
+DEFAULT_GP_HYPERPARAMS = {
+    "gp_amp": {"value": 2.0, "bounds": (0.01, 20.0)},
+    "gp_explength": {"value": 3000.0, "bounds": (200.0, 30000.0)},
+    "gp_per": {"value": 3000.0, "bounds": (500.0, 10000.0)},
+    "gp_perlength": {"value": 0.5, "bounds": (0.05, 1.5)},
+}
+
+_GP_HNAMES = ["gp_per", "gp_perlength", "gp_explength", "gp_amp"]
+
+
 def fit_keplerian(time, rv, rv_err, instruments, planet_params,
                   exclude_instruments=None, fix_eccentricities=False,
-                  run_mcmc=False, mcmc_nwalkers=50, mcmc_nsteps=1000):
+                  run_mcmc=False, mcmc_nwalkers=50, mcmc_nsteps=1000,
+                  use_gp=False, gp_hyperparams=None):
     """Fit a joint Keplerian model to multi-instrument RV data.
 
     Constructs a RadVel model with N Keplerian orbits plus per-instrument
@@ -72,6 +86,16 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
         Number of MCMC walkers.
     mcmc_nsteps : int
         Number of MCMC steps per walker.
+    use_gp : bool
+        If True, model correlated stellar activity noise with a
+        quasi-periodic Gaussian Process (RadVel GPLikelihood, pure
+        numpy QuasiPer kernel, O(N^3) -- use with nightly-binned
+        data). Hyperparameters are shared across instruments.
+        Default hyperparameters target a solar-type magnetic cycle.
+    gp_hyperparams : dict, optional
+        Override DEFAULT_GP_HYPERPARAMS. Keys: gp_amp, gp_explength,
+        gp_per, gp_perlength; values: {"value": float,
+        "bounds": (lo, hi)}.
 
     Returns
     -------
@@ -153,22 +177,43 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
     params['dvdt'] = radvel.Parameter(value=0.0)
     params['curv'] = radvel.Parameter(value=0.0)
 
+    # GP hyperparameters (shared across instruments) must be in the
+    # params dict before the model/likelihoods build their vector
+    gp_config = {}
+    if use_gp:
+        gp_config = {k: dict(v) for k, v in DEFAULT_GP_HYPERPARAMS.items()}
+        if gp_hyperparams:
+            for k, v in gp_hyperparams.items():
+                gp_config.setdefault(k, {}).update(v)
+        for name in _GP_HNAMES:
+            params[name] = radvel.Parameter(value=float(gp_config[name]["value"]))
+
     # Create RV model
     time_base = float(np.median(time))
     mod = radvel.RVModel(params, time_base=time_base)
 
     # Create per-instrument likelihoods on centered data
     likelihoods = []
+    like_by_inst = {}
     for inst in unique_instruments:
         mask = inst_arr == inst
         inst_time = time[mask]
         inst_rv = rv_centered[mask]
         inst_rv_err = rv_err[mask]
 
-        like = radvel.likelihood.RVLikelihood(
-            mod, inst_time, inst_rv, inst_rv_err,
-            suffix=f'_{inst}',
-        )
+        if use_gp:
+            like = radvel.likelihood.GPLikelihood(
+                mod, inst_time, inst_rv, inst_rv_err,
+                hnames=_GP_HNAMES,
+                suffix=f'_{inst}',
+                kernel_name="QuasiPer",
+            )
+        else:
+            like = radvel.likelihood.RVLikelihood(
+                mod, inst_time, inst_rv, inst_rv_err,
+                suffix=f'_{inst}',
+            )
+        like_by_inst[inst] = like
         # Gamma starts at 0 (data is pre-centered)
         like.params[f'gamma_{inst}'] = radvel.Parameter(value=0.0)
         # Set initial jitter to instrument median error
@@ -197,6 +242,13 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
         )
         break  # EccentricityPrior covers all planets at once
 
+    # GP hyperparameter priors (hard bounds keep the GP from
+    # absorbing planetary signals or collapsing to white noise)
+    if use_gp:
+        for name in _GP_HNAMES:
+            lo, hi = gp_config[name]["bounds"]
+            post.priors.append(radvel.prior.HardBounds(name, lo, hi))
+
     # Fix trend to zero (no long-term acceleration)
     post.params['dvdt'].vary = False
     post.params['curv'].vary = False
@@ -210,6 +262,13 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
         post.params[f'per{idx}'].vary = False
         post.params[f'e{idx}'].vary = False
         post.params[f'w{idx}'].vary = False
+    if use_gp:
+        # Pass 1: only the GP amplitude floats; timescales wait
+        # until offsets and K amplitudes are roughly right
+        post.params['gp_amp'].vary = True
+        post.params['gp_per'].vary = False
+        post.params['gp_explength'].vary = False
+        post.params['gp_perlength'].vary = False
     _sync_vary_flags(post)
 
     logger.info("Running MAP optimization (pass 1: fixed P, e, w)...")
@@ -233,6 +292,11 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
             idx = i + 1
             post.params[f'w{idx}'].vary = True
         logger.info("Running MAP optimization (pass 2: free w, e fixed)...")
+    if use_gp:
+        # Free GP timescales once orbital phases are roughly set
+        post.params['gp_per'].vary = True
+        post.params['gp_explength'].vary = True
+        post.params['gp_perlength'].vary = True
     _sync_vary_flags(post)
 
     try:
@@ -325,9 +389,27 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
         model_at_inst = mod(inst_time) + gamma_c
         model_rv[mask] = model_at_inst
         residuals[mask] = rv_centered[mask] - model_at_inst
+        if use_gp:
+            # Subtract the GP conditional mean (activity model) so
+            # residuals reflect what neither planets nor activity
+            # explain. Points within an instrument keep input order.
+            try:
+                gp_mean, _ = like_by_inst[inst].predict(inst_time)
+                model_rv[mask] += gp_mean
+                residuals[mask] -= gp_mean
+            except Exception as e:
+                logger.warning("GP prediction failed for %s: %s", inst, e)
 
     rms_after = float(np.std(residuals))
     logger.info("Keplerian fit: RMS %.2f -> %.2f m/s", rms_before, rms_after)
+
+    gp_result = None
+    if use_gp:
+        gp_result = {
+            name: round(float(fitted_params[name].value), 4)
+            for name in _GP_HNAMES
+        }
+        logger.info("GP hyperparameters: %s", gp_result)
 
     # Log gamma differences (instrument offsets)
     if len(unique_instruments) > 1:
@@ -349,7 +431,8 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
         "rms_after_ms": round(rms_after, 4),
         "n_measurements": len(time),
         "excluded_instruments": list(exclude_instruments),
-        "method": "radvel_keplerian",
+        "method": "radvel_keplerian_gp" if use_gp else "radvel_keplerian",
+        "gp": gp_result,
         "status": "ok",
     }
 
@@ -358,7 +441,8 @@ def keplerian_residual_analysis(time, rv, rv_err, instruments, planet_params,
                                  exclude_instruments=None,
                                  fix_eccentricities=False,
                                  min_period=1.0, max_period=None,
-                                 run_mcmc=False):
+                                 run_mcmc=False, use_gp=False,
+                                 gp_hyperparams=None):
     """Full Keplerian residual analysis: fit + periodogram on residuals.
 
     Drop-in replacement for rv_data.rv_residual_analysis() that uses
@@ -414,6 +498,8 @@ def keplerian_residual_analysis(time, rv, rv_err, instruments, planet_params,
         exclude_instruments=exclude_instruments,
         fix_eccentricities=fix_eccentricities,
         run_mcmc=run_mcmc,
+        use_gp=use_gp,
+        gp_hyperparams=gp_hyperparams,
     )
 
     result["keplerian_fit"] = kep_result

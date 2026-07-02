@@ -282,3 +282,69 @@ HARPS03 (2.98 m/s per MAD-sigma) -- the magnetic cycle.
 7c.2 complete. Progression across one day of work:
 K_d 2.66 (unbinned, honest fit) -> 1.73 (binned) -> 1.00 (decorrelated),
 literature 0.567. Next: 7c.3 quasi-periodic GP via celerite2.
+
+---
+
+## 7c.3 Results (2026-07-02)
+
+### Implementation
+
+- No celerite needed: nightly binning (748 points) makes RadVel's pure
+  numpy QuasiPer kernel (O(N^3) Cholesky) fast enough. This avoids the
+  Windows C++ toolchain entirely.
+- `fit_keplerian(use_gp=True)`: GPLikelihood per instrument with shared
+  quasi-periodic hyperparameters (gp_amp, gp_explength, gp_per,
+  gp_perlength); HardBounds priors; defaults target a solar-type
+  magnetic cycle (DEFAULT_GP_HYPERPARAMS, gp_per init 3000 d)
+- Pass schedule: pass 1 frees only gp_amp (offsets/K first); pass 2
+  frees GP timescales with w; pass 3 frees periods
+- Residuals subtract the GP conditional mean per instrument, so
+  rms_after_ms reflects what neither planets nor activity explain
+- `deep_dive`: final-stage GP fit on the decorrelated RVs (use_gp
+  flag, default on; skipped above 3000 points)
+
+### HD 20794: full chain vs literature
+
+| Parameter | 7c.1 binned | 7c.2 decorr | 7c.3 GP | Nari 2025 |
+|-----------|------------|-------------|---------|-----------|
+| P_b (d) | 18.310 | 18.319 | 18.317 (0.01%) | 18.315 |
+| P_c (d) | 89.36 | 89.25 | 89.59 (0.1%) | 89.68 |
+| P_d (d) | 642.6 | 637.1 | 654.3 (1.0%) | 647.6 |
+| K_b (m/s) | 0.883 | 0.755 | 0.687 (+12%) | 0.614 |
+| K_c (m/s) | 0.495 | 0.475 | 0.458 (-9%) | 0.502 |
+| K_d (m/s) | 1.73 | 0.999 | 0.612 (+8%) | 0.567 |
+| RMS (m/s) | 4.28 | 2.99 | 1.83 | ~1.5 |
+| Jitter E19/H03/H15 | -- | -- | 0.64/1.84/1.28 | ~0.4-1.0 |
+
+Fitted GP hyperparameters: per=1439 d, explength=1824 d, amp=3.0 m/s,
+perlength=0.46. The GP soaks up the magnetic cycle: residual
+periodogram peaks drop from power 0.26 (713 d) to 0.09 (1 d alias);
+cycle/beat peaks are gone. Remaining weak peaks: 114.6/82.1/165.8 d.
+
+### Verification criteria: status
+
+| Criterion (from plan) | Target | Achieved |
+|----------------------|--------|----------|
+| K_b, K_c, K_d | within 50% (stretch 20%) | 8-12% |
+| e_b, e_c | < 0.3 | fixed at lit |
+| P_b | 18.3 +/- 0.5 d | 18.317 |
+| RMS | -- | 1.83 vs lit ~1.5 |
+
+All 7c.3 criteria met and the stretch goal exceeded. The thesis
+(section 9.2) put "publication accuracy" at +/-8% for K; the automated
+pipeline now sits at 8-12% using only public DRS data -- without
+YARARA/sBART spectral reprocessing or nested sampling.
+
+### Caveat
+
+K uncertainties are not yet quantified (MAP only, k_err=None). The
+8-12% agreement is point-estimate agreement. MCMC or nested sampling
+(7c.4 juliet) would give posterior widths to judge consistency
+properly.
+
+### Verdict
+
+7c.3 complete. One-day progression on K_d (lit 0.567):
+2.66 -> 1.73 (binning) -> 1.00 (decorrelation) -> 0.612 (GP).
+Remaining steps: 7c.4 juliet model comparison (optional),
+7c.5 second-target validation on 61 Virginis.
