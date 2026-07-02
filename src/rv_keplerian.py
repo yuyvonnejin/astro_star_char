@@ -21,6 +21,19 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def _chain_err(chains, key):
+    """Half the 16th-84th percentile spread of an MCMC chain column.
+
+    Equivalent to 1-sigma for a Gaussian posterior. Returns None when
+    chains are unavailable or the parameter was not varied.
+    """
+    if chains is None or key not in chains:
+        return None
+    lo, hi = np.percentile(np.asarray(chains[key], dtype=float),
+                           [15.865, 84.135])
+    return float((hi - lo) / 2.0)
+
+
 def _sync_vary_flags(post):
     """Push params-dict vary flags into the posterior's vector cache.
 
@@ -322,15 +335,18 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
     # Optional MCMC
     mcmc_chains = None
     if run_mcmc:
-        logger.info("Running MCMC (%d walkers x %d steps)...",
+        logger.info("Running MCMC (%d walkers x %d steps, serial)...",
                      mcmc_nwalkers, mcmc_nsteps)
         try:
+            # serial=True: radvel's default parallel ensembles use
+            # multiprocessing, which fails when called from library
+            # code on Windows (spawn re-imports without __main__).
             chains = radvel.mcmc(
                 post, nwalkers=mcmc_nwalkers, nrun=mcmc_nsteps,
-                savename=None,
+                serial=True, headless=True, savename=None,
             )
             mcmc_chains = chains
-            logger.info("MCMC complete")
+            logger.info("MCMC complete: %d samples", len(chains))
         except Exception as e:
             logger.warning("MCMC failed: %s", e)
 
@@ -342,10 +358,6 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
     for i in range(n_planets):
         idx = i + 1
         k_val = float(fitted_params[f'k{idx}'].value)
-        k_err = None
-        if mcmc_chains is not None:
-            k_samples = mcmc_chains[f'k{idx}']
-            k_err = float(np.std(k_samples))
 
         planets_result.append({
             "period": float(fitted_params[f'per{idx}'].value),
@@ -353,7 +365,11 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
             "e": float(fitted_params[f'e{idx}'].value),
             "w": float(fitted_params[f'w{idx}'].value),
             "k": k_val,
-            "k_err": k_err,
+            "k_err": _chain_err(mcmc_chains, f'k{idx}'),
+            "period_err": _chain_err(mcmc_chains, f'per{idx}'),
+            "tc_err": _chain_err(mcmc_chains, f'tc{idx}'),
+            "e_err": _chain_err(mcmc_chains, f'e{idx}'),
+            "w_err": _chain_err(mcmc_chains, f'w{idx}'),
         })
         logger.info("  Planet %d: P=%.3f d, K=%.4f m/s, e=%.4f",
                      idx, planets_result[-1]["period"],
@@ -373,6 +389,8 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
             "gamma": gamma_absolute,
             "gamma_centered": gamma_centered,
             "jitter": jit,
+            "gamma_err": _chain_err(mcmc_chains, f'gamma_{inst}'),
+            "jitter_err": _chain_err(mcmc_chains, f'jit_{inst}'),
         }
         logger.info("  %s: gamma=%.3f m/s (centered: %.3f), jitter=%.3f m/s",
                      inst, gamma_absolute, gamma_centered, jit)
@@ -409,6 +427,10 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
             name: round(float(fitted_params[name].value), 4)
             for name in _GP_HNAMES
         }
+        for name in _GP_HNAMES:
+            err = _chain_err(mcmc_chains, name)
+            if err is not None:
+                gp_result[f"{name}_err"] = round(err, 4)
         logger.info("GP hyperparameters: %s", gp_result)
 
     # Log gamma differences (instrument offsets)

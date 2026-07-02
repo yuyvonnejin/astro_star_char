@@ -1,6 +1,24 @@
 # Phase 8: From Validated Chain to Proximity-Ordered Survey
 
-## Status: Draft (2026-07-02)
+## Status: 8.1 + 8.2 implemented (2026-07-02); HD 20794 MCMC verification run in progress
+
+### 8.1 implementation notes
+- radvel.mcmc called with serial=True (parallel ensembles use
+  multiprocessing, which breaks in library code on Windows) and
+  headless=True
+- Errors from chain 16-84 percentile half-width (_chain_err); k_err,
+  period_err, tc_err, e_err, w_err per planet; gamma_err/jitter_err
+  per instrument; gp_*_err for hyperparameters
+- deep_dive mcmc_final flag applies MCMC to the final GP stage only
+- Synthetic validation: K = 4.93 +/- 0.077 vs analytic sigma ~0.065
+
+### 8.2 implementation notes
+- data/known_planets.json holds per-target planet tables + config
+  (gp_hyperparams, activity_cycle_days, exclude_instruments, notes)
+- src/reference_data.py loader; deep_dive._known_planets_fallback is
+  now a thin wrapper
+- GP stage seeds gp_per/gp_explength from activity_cycle_days when no
+  explicit override (61 Vir: 5911 d from Laliotis+2023)
 
 ## Vision
 

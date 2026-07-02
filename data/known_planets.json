@@ -1,0 +1,186 @@
+{
+  "_schema": {
+    "description": "Per-target literature reference data for the RV survey. Keyed by HD identifier. planets: list of planet dicts (period_days required; k_ms, eccentricity, confirmed, reference recommended -- these drive Keplerian fit initialization and disputed-signal rejection). config: optional per-target pipeline overrides (gp_hyperparams: passed to fit_keplerian; exclude_instruments: passed to rv_filter_instruments; activity_cycle_days / rotation_days: documentation + candidate vetoes).",
+    "updated": "2026-07-02"
+  },
+  "HD 20794": {
+    "planets": [
+      {
+        "pl_name": "HD 20794 b",
+        "hostname": "HD 20794",
+        "period_days": 18.315,
+        "mass_earth": 2.7,
+        "mass_jupiter": 0.0085,
+        "radius_earth": null,
+        "radius_jupiter": null,
+        "discovery_method": "Radial Velocity",
+        "discovery_year": 2011,
+        "semi_major_axis_au": 0.1207,
+        "eq_temp_k": null,
+        "eccentricity": 0.06,
+        "distance_pc": 6.04,
+        "k_ms": 0.614,
+        "confirmed": true,
+        "reference": "Nari+2025"
+      },
+      {
+        "pl_name": "HD 20794 c",
+        "hostname": "HD 20794",
+        "period_days": 89.68,
+        "mass_earth": 3.53,
+        "mass_jupiter": 0.0111,
+        "radius_earth": null,
+        "radius_jupiter": null,
+        "discovery_method": "Radial Velocity",
+        "discovery_year": 2011,
+        "semi_major_axis_au": 0.3499,
+        "eq_temp_k": null,
+        "eccentricity": 0.08,
+        "distance_pc": 6.04,
+        "k_ms": 0.502,
+        "confirmed": true,
+        "reference": "Nari+2025"
+      },
+      {
+        "pl_name": "HD 20794 d",
+        "hostname": "HD 20794",
+        "period_days": 647.6,
+        "mass_earth": 5.35,
+        "mass_jupiter": 0.0168,
+        "radius_earth": null,
+        "radius_jupiter": null,
+        "discovery_method": "Radial Velocity",
+        "discovery_year": 2017,
+        "semi_major_axis_au": 1.37,
+        "eq_temp_k": null,
+        "eccentricity": 0.45,
+        "distance_pc": 6.04,
+        "k_ms": 0.567,
+        "confirmed": true,
+        "reference": "Nari+2025"
+      },
+      {
+        "pl_name": "HD 20794 e (disputed)",
+        "hostname": "HD 20794",
+        "period_days": 147.025,
+        "mass_earth": 4.77,
+        "mass_jupiter": 0.015,
+        "radius_earth": null,
+        "radius_jupiter": null,
+        "discovery_method": "Radial Velocity",
+        "discovery_year": 2017,
+        "semi_major_axis_au": 0.5095,
+        "eq_temp_k": null,
+        "eccentricity": 0.0,
+        "distance_pc": 6.04,
+        "k_ms": null,
+        "confirmed": false,
+        "reference": "Feng+2017, disputed by Nari+2025"
+      }
+    ],
+    "config": {
+      "activity_cycle_days": 3000,
+      "rotation_days": 39,
+      "notes": "40 d (Pepe 2011 c) = rotation; 414 d periodogram peak = annual/cycle beat; H03-H15 offset 17.0 +/- 1.7 m/s (Nari+2025)"
+    }
+  },
+  "HD 10700": {
+    "planets": [
+      {
+        "pl_name": "tau Cet e",
+        "hostname": "HD 10700",
+        "period_days": 162.87,
+        "mass_earth": 3.93,
+        "mass_jupiter": 0.0124,
+        "radius_earth": null,
+        "radius_jupiter": null,
+        "discovery_method": "Radial Velocity",
+        "discovery_year": 2012,
+        "semi_major_axis_au": 0.538,
+        "eq_temp_k": null,
+        "eccentricity": 0.18,
+        "distance_pc": 3.65
+      },
+      {
+        "pl_name": "tau Cet f",
+        "hostname": "HD 10700",
+        "period_days": 636.13,
+        "mass_earth": 3.93,
+        "mass_jupiter": 0.0124,
+        "radius_earth": null,
+        "radius_jupiter": null,
+        "discovery_method": "Radial Velocity",
+        "discovery_year": 2012,
+        "semi_major_axis_au": 1.334,
+        "eq_temp_k": null,
+        "eccentricity": 0.16,
+        "distance_pc": 3.65
+      }
+    ],
+    "config": {
+      "notes": "Entries predate deep dive; needs literature curation (g/h/e/f status, K amplitudes) before Tau Ceti survey run"
+    }
+  },
+  "HD 115617": {
+    "planets": [
+      {
+        "pl_name": "61 Vir b",
+        "hostname": "HD 115617",
+        "period_days": 4.21498,
+        "mass_earth": 5.98,
+        "mass_jupiter": 0.0188,
+        "radius_earth": null,
+        "radius_jupiter": null,
+        "discovery_method": "Radial Velocity",
+        "discovery_year": 2009,
+        "semi_major_axis_au": 0.0502,
+        "eq_temp_k": null,
+        "eccentricity": 0.033,
+        "distance_pc": 8.53,
+        "k_ms": 2.47,
+        "confirmed": true,
+        "reference": "Laliotis+2023"
+      },
+      {
+        "pl_name": "61 Vir c",
+        "hostname": "HD 115617",
+        "period_days": 38.079,
+        "mass_earth": 17.94,
+        "mass_jupiter": 0.0564,
+        "radius_earth": null,
+        "radius_jupiter": null,
+        "discovery_method": "Radial Velocity",
+        "discovery_year": 2009,
+        "semi_major_axis_au": 0.2175,
+        "eq_temp_k": null,
+        "eccentricity": 0.026,
+        "distance_pc": 8.53,
+        "k_ms": 3.56,
+        "confirmed": true,
+        "reference": "Laliotis+2023"
+      },
+      {
+        "pl_name": "61 Vir d",
+        "hostname": "HD 115617",
+        "period_days": 123.2,
+        "mass_earth": 10.82,
+        "mass_jupiter": 0.034,
+        "radius_earth": null,
+        "radius_jupiter": null,
+        "discovery_method": "Radial Velocity",
+        "discovery_year": 2009,
+        "semi_major_axis_au": 0.476,
+        "eq_temp_k": null,
+        "eccentricity": 0.15,
+        "distance_pc": 8.53,
+        "k_ms": 1.47,
+        "confirmed": true,
+        "reference": "Laliotis+2023 (FP per Rosenthal+2021, reconfirmed 2023)"
+      }
+    ],
+    "config": {
+      "activity_cycle_days": 5911,
+      "notes": "Cycle period from Laliotis+2023 long-period signal; d history: Vogt+2010 discovery, Rosenthal+2021 FP, Laliotis+2023/Cretignier+2023 reconfirmation at lower mass"
+    }
+  }
+}

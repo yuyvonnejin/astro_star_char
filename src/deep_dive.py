@@ -28,7 +28,8 @@ def run_deep_dive(target_name, max_tess_sectors=26,
                    injection_n_trials=50, injection_n_periods=15,
                    injection_n_amplitudes=10,
                    save_report=True, bin_nightly=True,
-                   decorrelate_activity=True, use_gp=True):
+                   decorrelate_activity=True, use_gp=True,
+                   mcmc_final=False):
     """Run comprehensive deep-dive analysis on a single target star.
 
     Parameters
@@ -58,6 +59,11 @@ def run_deep_dive(target_name, max_tess_sectors=26,
         If True (default), run a final Keplerian fit with a
         quasi-periodic GP activity model on the (decorrelated) RVs.
         Requires nightly binning to keep the O(N^3) GP tractable.
+    mcmc_final : bool
+        If True, run MCMC on the final fit stage to obtain parameter
+        uncertainties (k_err, period_err, ...). Slow (tens of
+        minutes with GP); default False. Survey scorecards should
+        enable this.
 
     Returns
     -------
@@ -115,7 +121,7 @@ def run_deep_dive(target_name, max_tess_sectors=26,
     rv_result = _run_rv_analysis(target, known_periods,
                                  bin_nightly=bin_nightly,
                                  decorrelate_activity=decorrelate_activity,
-                                 use_gp=use_gp)
+                                 use_gp=use_gp, mcmc_final=mcmc_final)
     result["rv_data"] = rv_result.get("rv_data")
     result["rv_residual_analysis"] = rv_result.get("residual_analysis")
 
@@ -238,113 +244,21 @@ def _run_known_planets(target):
 
 
 def _known_planets_fallback(target):
-    """Return hardcoded planet data for key targets when NASA is unreachable.
+    """Return literature planet data for key targets when NASA is
+    unreachable or lists disputed planets.
 
-    Reference data from peer-reviewed publications. HD 20794 uses Nari et al.
-    (2025, A&A 693, A297) which confirms only 3 planets (b, c, d) and
-    rejects the 147-day and 40-day signals.
-
-    Note: NASA Exoplanet Archive may list 4 planets for HD 20794 including
-    the 147-day "planet e" from Feng (2017). This is disputed -- Nari 2025
-    finds it worsens the model evidence.
+    Reference tables live in data/known_planets.json (Phase 8.2) so
+    survey targets are added by editing data, not code. See
+    src/reference_data.py for the loader and the JSON _schema entry
+    for field meaning.
     """
-    # Key: HD number -> list of planet dicts
-    reference = {
-        "HD 20794": [
-            # 3 confirmed planets per Nari et al. (2025, A&A 693, A297)
-            # K amplitudes and eccentricities from their Table 4
-            {"pl_name": "HD 20794 b", "hostname": "HD 20794",
-             "period_days": 18.315, "mass_earth": 2.7, "mass_jupiter": 0.0085,
-             "radius_earth": None, "radius_jupiter": None,
-             "discovery_method": "Radial Velocity", "discovery_year": 2011,
-             "semi_major_axis_au": 0.1207, "eq_temp_k": None,
-             "eccentricity": 0.06, "distance_pc": 6.04,
-             "k_ms": 0.614, "confirmed": True,
-             "reference": "Nari+2025"},
-            {"pl_name": "HD 20794 c", "hostname": "HD 20794",
-             "period_days": 89.68, "mass_earth": 3.53, "mass_jupiter": 0.0111,
-             "radius_earth": None, "radius_jupiter": None,
-             "discovery_method": "Radial Velocity", "discovery_year": 2011,
-             "semi_major_axis_au": 0.3499, "eq_temp_k": None,
-             "eccentricity": 0.08, "distance_pc": 6.04,
-             "k_ms": 0.502, "confirmed": True,
-             "reference": "Nari+2025"},
-            {"pl_name": "HD 20794 d", "hostname": "HD 20794",
-             "period_days": 647.6, "mass_earth": 5.35, "mass_jupiter": 0.0168,
-             "radius_earth": None, "radius_jupiter": None,
-             "discovery_method": "Radial Velocity", "discovery_year": 2017,
-             "semi_major_axis_au": 1.37, "eq_temp_k": None,
-             "eccentricity": 0.45, "distance_pc": 6.04,
-             "k_ms": 0.567, "confirmed": True,
-             "reference": "Nari+2025"},
-            # 147-day signal: DISPUTED (Feng 2017 "planet e")
-            # Nari 2025 finds adding it worsens model evidence
-            # Included for reference but flagged as disputed
-            {"pl_name": "HD 20794 e (disputed)", "hostname": "HD 20794",
-             "period_days": 147.025, "mass_earth": 4.77, "mass_jupiter": 0.015,
-             "radius_earth": None, "radius_jupiter": None,
-             "discovery_method": "Radial Velocity", "discovery_year": 2017,
-             "semi_major_axis_au": 0.5095, "eq_temp_k": None,
-             "eccentricity": 0.0, "distance_pc": 6.04,
-             "k_ms": None, "confirmed": False,
-             "reference": "Feng+2017, disputed by Nari+2025"},
-        ],
-        "HD 10700": [
-            {"pl_name": "tau Cet e", "hostname": "HD 10700",
-             "period_days": 162.87, "mass_earth": 3.93, "mass_jupiter": 0.0124,
-             "radius_earth": None, "radius_jupiter": None,
-             "discovery_method": "Radial Velocity", "discovery_year": 2012,
-             "semi_major_axis_au": 0.538, "eq_temp_k": None,
-             "eccentricity": 0.18, "distance_pc": 3.65},
-            {"pl_name": "tau Cet f", "hostname": "HD 10700",
-             "period_days": 636.13, "mass_earth": 3.93, "mass_jupiter": 0.0124,
-             "radius_earth": None, "radius_jupiter": None,
-             "discovery_method": "Radial Velocity", "discovery_year": 2012,
-             "semi_major_axis_au": 1.334, "eq_temp_k": None,
-             "eccentricity": 0.16, "distance_pc": 3.65},
-        ],
-        "HD 115617": [
-            # 3 confirmed planets per Laliotis et al. (2023, AJ 165, 176)
-            # Table values: P, K, e from their joint HARPS+HIRES fit.
-            # Planet d history: Vogt+2010 discovery (22.9 Me), flagged
-            # false positive by Rosenthal+2021, reconfirmed at lower
-            # mass by Laliotis+2023 and Cretignier+2023.
-            # NASA archive default rows still carry Vogt 2010 values.
-            {"pl_name": "61 Vir b", "hostname": "HD 115617",
-             "period_days": 4.21498, "mass_earth": 5.98,
-             "mass_jupiter": 0.0188,
-             "radius_earth": None, "radius_jupiter": None,
-             "discovery_method": "Radial Velocity", "discovery_year": 2009,
-             "semi_major_axis_au": 0.0502, "eq_temp_k": None,
-             "eccentricity": 0.033, "distance_pc": 8.53,
-             "k_ms": 2.47, "confirmed": True,
-             "reference": "Laliotis+2023"},
-            {"pl_name": "61 Vir c", "hostname": "HD 115617",
-             "period_days": 38.079, "mass_earth": 17.94,
-             "mass_jupiter": 0.0564,
-             "radius_earth": None, "radius_jupiter": None,
-             "discovery_method": "Radial Velocity", "discovery_year": 2009,
-             "semi_major_axis_au": 0.2175, "eq_temp_k": None,
-             "eccentricity": 0.026, "distance_pc": 8.53,
-             "k_ms": 3.56, "confirmed": True,
-             "reference": "Laliotis+2023"},
-            {"pl_name": "61 Vir d", "hostname": "HD 115617",
-             "period_days": 123.2, "mass_earth": 10.82,
-             "mass_jupiter": 0.034,
-             "radius_earth": None, "radius_jupiter": None,
-             "discovery_method": "Radial Velocity", "discovery_year": 2009,
-             "semi_major_axis_au": 0.476, "eq_temp_k": None,
-             "eccentricity": 0.15, "distance_pc": 8.53,
-             "k_ms": 1.47, "confirmed": True,
-             "reference": "Laliotis+2023 (FP per Rosenthal+2021, "
-                          "reconfirmed 2023)"},
-        ],
-    }
+    from src.reference_data import load_known_planets
 
     hd = target.get("hd")
-    if hd and hd in reference:
-        return reference[hd]
+    if hd:
+        return load_known_planets(hd)
     return None
+
 
 
 def _extract_known_periods(known_planets_result, target=None):
@@ -526,7 +440,8 @@ def _run_tess_analysis(target, stellar_mass, stellar_radius, stellar_teff,
 
 
 def _run_rv_analysis(target, known_periods, bin_nightly=True,
-                     decorrelate_activity=True, use_gp=True):
+                     decorrelate_activity=True, use_gp=True,
+                     mcmc_final=False):
     """Run RV data retrieval and multi-planet residual analysis.
 
     Uses Keplerian fitting via RadVel if available, falls back to
@@ -591,7 +506,7 @@ def _run_rv_analysis(target, known_periods, bin_nightly=True,
             residual_summary = _run_keplerian_or_sinusoidal(
                 rv_data_filtered, known_periods, target,
                 decorrelate_activity=decorrelate_activity,
-                use_gp=use_gp,
+                use_gp=use_gp, mcmc_final=mcmc_final,
             )
 
         return {
@@ -610,7 +525,8 @@ def _run_rv_analysis(target, known_periods, bin_nightly=True,
 
 
 def _run_keplerian_or_sinusoidal(rv_data, known_periods, target,
-                                 decorrelate_activity=True, use_gp=True):
+                                 decorrelate_activity=True, use_gp=True,
+                                 mcmc_final=False):
     """Try Keplerian fit first, fall back to sinusoidal subtraction.
 
     Stages: plain Keplerian fit -> (optional) residual decorrelation
@@ -631,6 +547,11 @@ def _run_keplerian_or_sinusoidal(rv_data, known_periods, target,
         Enable the decorrelation + refit pass.
     use_gp : bool
         Enable the final GP-model fit.
+    mcmc_final : bool
+        Run MCMC on the final (GP) fit for parameter uncertainties.
+        Only applied to the GP stage; if the GP stage is disabled or
+        skipped, uncertainties are unavailable and a warning is
+        logged.
 
     Returns
     -------
@@ -713,20 +634,39 @@ def _run_keplerian_or_sinusoidal(rv_data, known_periods, target,
         # rotation / magnetic cycle signals that linear decorrelation
         # cannot. O(N^3) -- intended for nightly-binned data.
         gp_summary = None
+        if mcmc_final and not use_gp:
+            logger.warning("mcmc_final requested but use_gp=False; "
+                           "uncertainties will not be computed")
         if use_gp and kep_fit.get("status") == "ok":
             n_pts = len(rv_data["time"])
             if n_pts > 3000:
                 logger.info("Skipping GP fit: %d points too many for "
                             "O(N^3) kernel (bin nightly first)", n_pts)
             else:
+                # Per-target GP overrides from data/known_planets.json:
+                # explicit gp_hyperparams wins; else seed gp_per and
+                # gp_explength from the known activity cycle period
+                from src.reference_data import load_target_config
+                config = load_target_config(target.get("hd")) \
+                    if target.get("hd") else {}
+                gp_hp = config.get("gp_hyperparams")
+                cycle = config.get("activity_cycle_days")
+                if gp_hp is None and cycle:
+                    gp_hp = {
+                        "gp_per": {"value": float(cycle)},
+                        "gp_explength": {"value": float(cycle)},
+                    }
                 logger.info("Running final Keplerian + GP fit "
-                            "(%d points)...", n_pts)
+                            "(%d points, mcmc=%s, gp_overrides=%s)...",
+                            n_pts, mcmc_final, gp_hp)
                 residual_gp = keplerian_residual_analysis(
                     rv_data["time"], rv_used, rv_data["rv_err"],
                     instruments=rv_data["instrument"],
                     planet_params=planet_params,
                     fix_eccentricities=fix_e,
                     use_gp=True,
+                    gp_hyperparams=gp_hp,
+                    run_mcmc=mcmc_final,
                 )
                 kep_fit_gp = residual_gp.get("keplerian_fit", {})
                 if kep_fit_gp.get("status") == "ok":
