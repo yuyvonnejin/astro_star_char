@@ -859,6 +859,10 @@ def rv_filter_instruments(rv_data, exclude=None, min_precision_ms=None,
     rv_err_f = rv_err[keep]
     instruments_f = [instruments[i] for i in range(len(keep)) if keep[i]]
     unique_f = sorted(set(instruments_f))
+    indicators_f = {
+        k: np.asarray(v, dtype=float)[keep]
+        for k, v in rv_data.get("indicators", {}).items()
+    }
 
     # Rebuild instrument summary
     inst_summary = {}
@@ -889,6 +893,7 @@ def rv_filter_instruments(rv_data, exclude=None, min_precision_ms=None,
         "instruments": unique_f,
         "instrument_summary": inst_summary,
         "excluded_instruments": exclude,
+        "indicators": indicators_f,
     }
 
 
@@ -938,6 +943,10 @@ def rv_bin_nightly(rv_data):
         return result
 
     nights = np.floor(time).astype(int)
+    indicators = {
+        k: np.asarray(v, dtype=float)
+        for k, v in rv_data.get("indicators", {}).items()
+    }
 
     # Group indices by (instrument, night)
     groups = {}
@@ -946,6 +955,7 @@ def rv_bin_nightly(rv_data):
         groups.setdefault(key, []).append(i)
 
     time_b, rv_b, err_b, inst_b = [], [], [], []
+    ind_b = {k: [] for k in indicators}
     for key in groups:
         idx = np.array(groups[key])
         t_g = time[idx]
@@ -968,12 +978,23 @@ def rv_bin_nightly(rv_data):
         err_b.append(max(err_prop, scatter_err))
         inst_b.append(key[0])
 
+        # Bin indicators with the same weights, ignoring NaN entries
+        for k, arr in indicators.items():
+            vals = arr[idx]
+            finite = np.isfinite(vals)
+            if np.any(finite):
+                wf = w[finite]
+                ind_b[k].append(float(np.sum(wf * vals[finite]) / np.sum(wf)))
+            else:
+                ind_b[k].append(np.nan)
+
     # Sort by time
     order = np.argsort(time_b)
     time_b = np.array(time_b)[order]
     rv_b = np.array(rv_b)[order]
     err_b = np.array(err_b)[order]
     inst_b = [inst_b[i] for i in order]
+    ind_b = {k: np.array(v)[order] for k, v in ind_b.items()}
     unique_b = sorted(set(inst_b))
 
     inst_summary = {}
@@ -1004,8 +1025,138 @@ def rv_bin_nightly(rv_data):
         "instrument_summary": inst_summary,
         "binned_nightly": True,
         "n_measurements_unbinned": n_in,
+        "indicators": ind_b,
     })
     return result
+
+
+def rv_decorrelate_activity(rv_data, residuals=None,
+                            indicator_names=("fwhm", "bis", "smw"),
+                            sigma_clip=5.0, min_points=20):
+    """Linearly decorrelate RVs against stellar activity indicators.
+
+    Stellar activity (rotation ~39 d, magnetic cycle ~3000 d for
+    HD 20794) produces RV signals that correlate with spectral line
+    shape indicators (CCF FWHM, bisector span) and chromospheric
+    emission (S-index). A per-instrument linear regression against
+    these indicators removes the correlated component to first order.
+    This is a lightweight substitute for the GP activity model used
+    by Nari et al. (2025).
+
+    The regression target should be Keplerian fit residuals
+    (`residuals`), not raw RVs: planets do not correlate with
+    indicators, so regressing residuals avoids absorbing planetary
+    signal into the activity model.
+
+    Parameters
+    ----------
+    rv_data : dict
+        RV data dict with an 'indicators' key (dict of parallel
+        arrays, NaN where missing) as produced by query_dace_rv().
+    residuals : array-like, optional
+        Regression target, same length as rv_data['rv']. Typically
+        residuals from a first Keplerian fit. If None, per-instrument
+        median-centered RVs are used (only safe when planetary
+        signals are much smaller than activity).
+    indicator_names : tuple[str]
+        Indicators to regress against (subset of the 'indicators'
+        keys). Default: fwhm, bis, smw.
+    sigma_clip : float
+        Indicator values beyond this many MAD-sigmas from the
+        instrument median are clamped, limiting outlier leverage.
+    min_points : int
+        Minimum finite indicator points per instrument for that
+        indicator column to be used.
+
+    Returns
+    -------
+    dict
+        rv_corrected : RV array with activity component subtracted.
+        correction : the subtracted component (zero-mean per
+            instrument, so fitted gammas are unaffected).
+        indicators_used : list of indicator names used anywhere.
+        per_instrument : dict with coefficients (m/s per MAD-sigma),
+            variance_reduction, n_points per instrument.
+    """
+    rv = np.asarray(rv_data["rv"], dtype=float)
+    instruments = list(rv_data["instrument"])
+    inst_arr = np.array(instruments)
+    indicators = rv_data.get("indicators", {}) or {}
+
+    if residuals is not None:
+        signal = np.asarray(residuals, dtype=float)
+        if len(signal) != len(rv):
+            raise ValueError(
+                f"residuals length {len(signal)} != rv length {len(rv)}"
+            )
+    else:
+        signal = rv.copy()
+        for inst in sorted(set(instruments)):
+            m = inst_arr == inst
+            signal[m] -= np.median(signal[m])
+
+    correction = np.zeros_like(rv)
+    per_instrument = {}
+    used_any = set()
+
+    for inst in sorted(set(instruments)):
+        m = inst_arr == inst
+        cols = []
+        used = []
+        for name in indicator_names:
+            if name not in indicators:
+                continue
+            vals = np.asarray(indicators[name], dtype=float)[m]
+            finite = np.isfinite(vals)
+            if int(finite.sum()) < min_points:
+                continue
+            med = float(np.median(vals[finite]))
+            mad_sigma = 1.4826 * float(np.median(np.abs(vals[finite] - med)))
+            if mad_sigma < 1e-12:
+                continue
+            z = (vals - med) / mad_sigma
+            # Clamp outliers; zero out missing (median = no correction)
+            z = np.clip(z, -sigma_clip, sigma_clip)
+            z[~finite] = 0.0
+            cols.append(z)
+            used.append(name)
+
+        if not cols:
+            continue
+
+        X = np.column_stack(cols)
+        y = signal[m]
+        rows = np.isfinite(y)
+        if int(rows.sum()) <= len(cols) + 2:
+            continue
+
+        coef, _, _, _ = np.linalg.lstsq(X[rows], y[rows], rcond=None)
+        corr = X @ coef
+        # Zero-mean per instrument: leave gamma to the Keplerian fit
+        corr -= float(np.mean(corr))
+        correction[m] = corr
+        used_any.update(used)
+
+        var_before = float(np.var(y[rows]))
+        var_after = float(np.var(y[rows] - corr[rows]))
+        reduction = 1.0 - var_after / var_before if var_before > 0 else 0.0
+        per_instrument[inst] = {
+            "coefficients": {u: round(float(c), 4)
+                             for u, c in zip(used, coef)},
+            "variance_reduction": round(reduction, 4),
+            "n_points": int(rows.sum()),
+        }
+        logger.info("Decorrelation %s: %s, variance reduction %.1f%%",
+                    inst, {u: round(float(c), 3)
+                           for u, c in zip(used, coef)},
+                    100 * reduction)
+
+    return {
+        "rv_corrected": rv - correction,
+        "correction": correction,
+        "indicators_used": sorted(used_any),
+        "per_instrument": per_instrument,
+    }
 
 
 # --- Internal helpers ---
@@ -1111,6 +1262,27 @@ def _parse_dace_query_rv(data, star_name):
     instruments = list(instruments)
     drs_qc = data.get('drs_qc', [True] * len(times))
 
+    # Activity indicators (dace-query >= 3.0 field names).
+    # Kept as parallel arrays for activity decorrelation (Phase 7c.2).
+    indicator_fields = {
+        "fwhm": "ccf_fwhm",
+        "bis": "ccf_bispan",
+        "smw": "spectro_smw",
+        "rhk": "spectro_rhk",
+        "halpha": "spectro_halpha",
+    }
+    indicators = {}
+    for name, field in indicator_fields.items():
+        if field in data:
+            arr = np.array(data[field], dtype=float)
+            if len(arr) == len(times):
+                # DACE uses 0 / huge values as missing-data sentinels
+                bad = ~np.isfinite(arr) | (np.abs(arr) > 1e8) | (arr == 0)
+                arr = arr.copy()
+                arr[bad] = np.nan
+                if np.isfinite(arr).sum() > 0:
+                    indicators[name] = arr
+
     if len(times) == 0:
         return None
 
@@ -1126,6 +1298,7 @@ def _parse_dace_query_rv(data, star_name):
     rvs = rvs[valid]
     rv_errs = rv_errs[valid]
     instruments = [str(instruments[i]) for i in range(len(valid)) if valid[i]]
+    indicators = {k: v[valid] for k, v in indicators.items()}
 
     if len(times) == 0:
         logger.info("DACE returned data but all measurements filtered for '%s'", star_name)
@@ -1137,6 +1310,7 @@ def _parse_dace_query_rv(data, star_name):
     rvs = rvs[sort_idx]
     rv_errs = rv_errs[sort_idx]
     instruments = [instruments[i] for i in sort_idx]
+    indicators = {k: v[sort_idx] for k, v in indicators.items()}
 
     unique_instruments = sorted(set(instruments))
     baseline = float(times[-1] - times[0])
@@ -1168,6 +1342,7 @@ def _parse_dace_query_rv(data, star_name):
         "time_baseline_days": baseline,
         "instruments": unique_instruments,
         "instrument_summary": inst_summary,
+        "indicators": indicators,
     }
 
 

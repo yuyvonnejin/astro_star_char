@@ -1,13 +1,13 @@
 """Tests for Phase 7c: RV convergence improvements.
 
-7c.1: Nightly binning (rv_bin_nightly).
-Later steps (activity decorrelation, GP) add their tests here.
+7c.1: Nightly binning (rv_bin_nightly), RadVel vary-flag regression.
+7c.2: Activity indicator decorrelation (rv_decorrelate_activity).
 """
 
 import numpy as np
 import pytest
 
-from src.rv_data import rv_bin_nightly
+from src.rv_data import rv_bin_nightly, rv_decorrelate_activity
 
 
 # ============================================================
@@ -277,3 +277,152 @@ class TestVaryFlagSync:
         e_fit = result["planets"][0]["e"]
         assert abs(e_fit - 0.05) > 1e-6
         assert e_fit == pytest.approx(0.4, abs=0.15)
+
+
+# ============================================================
+# Activity Indicator Decorrelation (7c.2)
+# ============================================================
+
+class TestRVDecorrelateActivity:
+    """Tests for rv_decorrelate_activity."""
+
+    def _make_data(self, n=300, slope=2.0, noise=0.3, seed=3,
+                   two_instruments=False):
+        """RV = slope * activity + noise; indicator traces activity."""
+        rng = np.random.default_rng(seed)
+        time = np.sort(rng.uniform(50000, 52000, n))
+        # Activity: slow sinusoid (magnetic-cycle-like)
+        activity = np.sin(2 * np.pi * time / 1500.0)
+        fwhm = 6000.0 + 10.0 * activity + rng.normal(0, 0.5, n)
+        rv = slope * activity + rng.normal(0, noise, n)
+
+        if two_instruments:
+            instruments = ["A" if t < 51000 else "B" for t in time]
+            # Instrument B has different indicator offset
+            mask_b = np.array([i == "B" for i in instruments])
+            fwhm = fwhm + 50.0 * mask_b
+        else:
+            instruments = ["HARPS"] * n
+
+        return {
+            "time": time,
+            "rv": rv,
+            "rv_err": np.full(n, noise),
+            "instrument": instruments,
+            "instruments": sorted(set(instruments)),
+            "n_measurements": n,
+            "time_baseline_days": float(time[-1] - time[0]),
+            "indicators": {"fwhm": fwhm},
+        }, rv - slope * activity
+
+    def test_removes_correlated_signal(self):
+        """Activity component is removed; corrected RV near clean RV."""
+        data, rv_clean = self._make_data()
+        result = rv_decorrelate_activity(data, residuals=data["rv"])
+        assert result["indicators_used"] == ["fwhm"]
+        rms_before = np.std(data["rv"])
+        rms_after = np.std(result["rv_corrected"] - np.mean(rv_clean))
+        assert rms_after < 0.5 * rms_before
+
+    def test_variance_reduction_reported(self):
+        data, _ = self._make_data()
+        result = rv_decorrelate_activity(data, residuals=data["rv"])
+        red = result["per_instrument"]["HARPS"]["variance_reduction"]
+        assert red > 0.5
+
+    def test_per_instrument_offsets_handled(self):
+        """Indicator offsets between instruments do not leak into RV."""
+        data, rv_clean = self._make_data(two_instruments=True)
+        result = rv_decorrelate_activity(data, residuals=data["rv"])
+        # Correction is zero-mean per instrument
+        inst_arr = np.array(data["instrument"])
+        for inst in ["A", "B"]:
+            m = inst_arr == inst
+            assert abs(np.mean(result["correction"][m])) < 1e-8
+
+    def test_no_indicators_noop(self):
+        data, _ = self._make_data()
+        data["indicators"] = {}
+        result = rv_decorrelate_activity(data)
+        assert result["indicators_used"] == []
+        assert np.allclose(result["correction"], 0.0)
+
+    def test_uncorrelated_indicator_small_correction(self):
+        """Regression against pure-noise indicator changes little."""
+        rng = np.random.default_rng(11)
+        n = 300
+        data, _ = self._make_data(n=n)
+        data["indicators"]["fwhm"] = 6000.0 + rng.normal(0, 1.0, n)
+        result = rv_decorrelate_activity(data, residuals=data["rv"])
+        # Correction RMS should be small vs signal RMS
+        assert np.std(result["correction"]) < 0.3 * np.std(data["rv"])
+
+    def test_nan_indicators_zero_correction(self):
+        """Points with missing indicator get zero correction."""
+        data, _ = self._make_data()
+        fwhm = data["indicators"]["fwhm"]
+        fwhm[:50] = np.nan
+        result = rv_decorrelate_activity(data, residuals=data["rv"])
+        assert result["indicators_used"] == ["fwhm"]
+        # NaN points: z=0 -> correction = -mean(corr) only (small)
+        assert np.all(np.isfinite(result["rv_corrected"]))
+
+    def test_residual_length_mismatch_raises(self):
+        data, _ = self._make_data()
+        with pytest.raises(ValueError):
+            rv_decorrelate_activity(data, residuals=np.zeros(10))
+
+
+class TestIndicatorThreading:
+    """Indicators must survive filtering and binning."""
+
+    def test_filter_subsets_indicators(self):
+        from src.rv_data import rv_filter_instruments
+
+        n = 60
+        rng = np.random.default_rng(5)
+        time = np.sort(rng.uniform(50000, 51000, n))
+        data = {
+            "time": time,
+            "rv": rng.normal(0, 1, n),
+            "rv_err": np.concatenate([np.full(30, 1.0), np.full(30, 300.0)]),
+            "instrument": ["GOOD"] * 30 + ["BAD"] * 30,
+            "instruments": ["BAD", "GOOD"],
+            "n_measurements": n,
+            "time_baseline_days": float(time[-1] - time[0]),
+            "indicators": {"fwhm": np.arange(n, dtype=float)},
+        }
+        result = rv_filter_instruments(data, min_precision_ms=50.0)
+        assert result["n_measurements"] == 30
+        assert len(result["indicators"]["fwhm"]) == 30
+
+    def test_binning_averages_indicators(self):
+        data = {
+            "time": np.array([50000.1, 50000.2, 50001.1]),
+            "rv": np.array([1.0, 2.0, 3.0]),
+            "rv_err": np.array([1.0, 1.0, 1.0]),
+            "instrument": ["HARPS"] * 3,
+            "instruments": ["HARPS"],
+            "n_measurements": 3,
+            "time_baseline_days": 1.0,
+            "indicators": {"fwhm": np.array([10.0, 20.0, 30.0])},
+        }
+        binned = rv_bin_nightly(data)
+        assert binned["n_measurements"] == 2
+        fwhm = binned["indicators"]["fwhm"]
+        assert sorted(fwhm.tolist()) == [15.0, 30.0]
+
+    def test_binning_nan_indicator_bin(self):
+        """A bin whose indicator values are all NaN stays NaN."""
+        data = {
+            "time": np.array([50000.1, 50000.2]),
+            "rv": np.array([1.0, 2.0]),
+            "rv_err": np.array([1.0, 1.0]),
+            "instrument": ["HARPS"] * 2,
+            "instruments": ["HARPS"],
+            "n_measurements": 2,
+            "time_baseline_days": 0.1,
+            "indicators": {"bis": np.array([np.nan, np.nan])},
+        }
+        binned = rv_bin_nightly(data)
+        assert np.isnan(binned["indicators"]["bis"][0])

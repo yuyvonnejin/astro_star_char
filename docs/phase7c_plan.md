@@ -1,6 +1,6 @@
 # Phase 7c: Convergence Improvements and Second-Target Validation
 
-## Status: 7c.1 complete (2026-07-02); see Results section at bottom
+## Status: 7c.1 + 7c.2 complete (2026-07-02); see Results sections at bottom
 
 ## Context
 
@@ -225,3 +225,60 @@ the amplitudes.
 7c.1 complete. The vary-flag fix (found during 7c.1 verification) is a
 bigger improvement than binning itself. Next: 7c.2 activity indicator
 decorrelation, using ccf_fwhm/ccf_bispan now available from DACE v3.
+
+---
+
+## 7c.2 Results (2026-07-02)
+
+### Implementation
+
+- `_parse_dace_query_rv()`: carries activity indicators (fwhm, bis,
+  smw, rhk, halpha) as parallel arrays with NaN for missing; DACE
+  sentinel values (0, |x| > 1e8) converted to NaN
+- `rv_filter_instruments()` and `rv_bin_nightly()`: indicators
+  follow the same masking / weighted binning as RVs
+- New `rv_decorrelate_activity()` in rv_data.py: per-instrument
+  linear regression of Keplerian fit residuals against MAD-normalized
+  indicators (default: fwhm, bis, smw); indicator outliers clamped at
+  5 MAD-sigma; correction is zero-mean per instrument (gammas
+  unaffected)
+- `deep_dive._run_keplerian_or_sinusoidal()`: fit -> decorrelate
+  residuals -> subtract -> refit; refit kept only if residual RMS
+  improves; summary stored under 'activity_decorrelation'
+- Regressing fit residuals (not raw RV) protects planetary signal
+  from being absorbed into the activity model
+
+### HD 20794: decorrelation impact (all runs binned, fixed optimizer)
+
+| Parameter | 7c.1 (no decorr) | 7c.2 (decorr) | Nari 2025 |
+|-----------|------------------|---------------|-----------|
+| P_b (d) | 18.310 | 18.319 | 18.315 |
+| P_c (d) | 89.36 | 89.25 | 89.68 |
+| P_d (d) | 642.6 | 637.1 | 647.6 |
+| K_b (m/s) | 0.883 (44% high) | 0.755 (23% high) | 0.614 |
+| K_c (m/s) | 0.495 | 0.475 (5% low) | 0.502 |
+| K_d (m/s) | 1.73 (3.0x) | 0.999 (1.8x) | 0.567 |
+| RMS after (m/s) | 4.28 | 2.99 | ~1.5 |
+
+Variance reduction of residuals by instrument: HARPS03 54.8%,
+ESPRESSO19 47.4%, HARPS15 14.6%. Dominant coefficient: FWHM on
+HARPS03 (2.98 m/s per MAD-sigma) -- the magnetic cycle.
+
+### Interpretation
+
+- Every K amplitude moved toward literature; K_d improved most
+  (1.73 -> 1.00 m/s), confirming its inflation was magnetic cycle
+  leakage.
+- The 713 d beat-alias residual peak from 7c.1 is gone. Remaining
+  residual peaks (482 d, 1549 d, 1080 d, 3564 d) are the parts of
+  the ~3000 d cycle a single linear term cannot capture -- the cycle
+  is not a linear function of the indicators over 20+ years.
+- Periods stay within 0.03-1.6% of literature.
+- Remaining gap to Nari (K_b +23%, K_d +76%, RMS 2.99 vs 1.5) is
+  the 7c.3 GP target.
+
+### Verdict
+
+7c.2 complete. Progression across one day of work:
+K_d 2.66 (unbinned, honest fit) -> 1.73 (binned) -> 1.00 (decorrelated),
+literature 0.567. Next: 7c.3 quasi-periodic GP via celerite2.

@@ -27,7 +27,8 @@ OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output" / "target_reports
 def run_deep_dive(target_name, max_tess_sectors=26,
                    injection_n_trials=50, injection_n_periods=15,
                    injection_n_amplitudes=10,
-                   save_report=True, bin_nightly=True):
+                   save_report=True, bin_nightly=True,
+                   decorrelate_activity=True):
     """Run comprehensive deep-dive analysis on a single target star.
 
     Parameters
@@ -48,6 +49,11 @@ def run_deep_dive(target_name, max_tess_sectors=26,
         If True (default), bin RV measurements to one point per
         instrument per night before Keplerian fitting. Suppresses
         correlated intra-night noise (p-modes, granulation).
+    decorrelate_activity : bool
+        If True (default), after the first Keplerian fit, linearly
+        decorrelate the residuals against activity indicators
+        (FWHM, BIS, S-index) and refit. First-order removal of
+        rotation and magnetic cycle signals.
 
     Returns
     -------
@@ -103,7 +109,8 @@ def run_deep_dive(target_name, max_tess_sectors=26,
 
     # Step 5: RV data retrieval and multi-planet analysis
     rv_result = _run_rv_analysis(target, known_periods,
-                                 bin_nightly=bin_nightly)
+                                 bin_nightly=bin_nightly,
+                                 decorrelate_activity=decorrelate_activity)
     result["rv_data"] = rv_result.get("rv_data")
     result["rv_residual_analysis"] = rv_result.get("residual_analysis")
 
@@ -491,7 +498,8 @@ def _run_tess_analysis(target, stellar_mass, stellar_radius, stellar_teff,
         }
 
 
-def _run_rv_analysis(target, known_periods, bin_nightly=True):
+def _run_rv_analysis(target, known_periods, bin_nightly=True,
+                     decorrelate_activity=True):
     """Run RV data retrieval and multi-planet residual analysis.
 
     Uses Keplerian fitting via RadVel if available, falls back to
@@ -555,6 +563,7 @@ def _run_rv_analysis(target, known_periods, bin_nightly=True):
         if known_periods:
             residual_summary = _run_keplerian_or_sinusoidal(
                 rv_data_filtered, known_periods, target,
+                decorrelate_activity=decorrelate_activity,
             )
 
         return {
@@ -572,8 +581,13 @@ def _run_rv_analysis(target, known_periods, bin_nightly=True):
         }
 
 
-def _run_keplerian_or_sinusoidal(rv_data, known_periods, target):
+def _run_keplerian_or_sinusoidal(rv_data, known_periods, target,
+                                 decorrelate_activity=True):
     """Try Keplerian fit first, fall back to sinusoidal subtraction.
+
+    With decorrelate_activity=True and activity indicators present,
+    runs fit -> residual decorrelation -> refit, and keeps the refit
+    if it improves the residual RMS.
 
     Parameters
     ----------
@@ -583,6 +597,8 @@ def _run_keplerian_or_sinusoidal(rv_data, known_periods, target):
         Known planet periods (days).
     target : dict
         Target info dict.
+    decorrelate_activity : bool
+        Enable the decorrelation + refit pass.
 
     Returns
     -------
@@ -611,8 +627,52 @@ def _run_keplerian_or_sinusoidal(rv_data, known_periods, target):
             fix_eccentricities=fix_e,
         )
 
-        # Build summary (strip large arrays)
         kep_fit = residual.get("keplerian_fit", {})
+
+        # Activity decorrelation pass: regress fit-1 residuals on
+        # indicators, subtract, refit. Keep refit only if RMS improves.
+        decorr_summary = None
+        indicators = rv_data.get("indicators") or {}
+        if (decorrelate_activity and indicators
+                and kep_fit.get("status") == "ok"
+                and kep_fit.get("residuals") is not None):
+            from src.rv_data import rv_decorrelate_activity
+
+            decorr = rv_decorrelate_activity(
+                rv_data, residuals=kep_fit["residuals"],
+            )
+            if decorr["indicators_used"]:
+                logger.info("Refitting on activity-decorrelated RVs "
+                            "(indicators: %s)",
+                            decorr["indicators_used"])
+                residual2 = keplerian_residual_analysis(
+                    rv_data["time"], decorr["rv_corrected"],
+                    rv_data["rv_err"],
+                    instruments=rv_data["instrument"],
+                    planet_params=planet_params,
+                    fix_eccentricities=fix_e,
+                )
+                kep_fit2 = residual2.get("keplerian_fit", {})
+                rms1 = kep_fit.get("rms_after_ms")
+                rms2 = kep_fit2.get("rms_after_ms")
+                if (kep_fit2.get("status") == "ok"
+                        and rms1 is not None and rms2 is not None
+                        and rms2 < rms1):
+                    decorr_summary = {
+                        "indicators_used": decorr["indicators_used"],
+                        "per_instrument": decorr["per_instrument"],
+                        "rms_before_decorr_ms": rms1,
+                        "rms_after_decorr_ms": rms2,
+                    }
+                    residual = residual2
+                    kep_fit = kep_fit2
+                    logger.info("Decorrelation kept: RMS %.2f -> %.2f m/s",
+                                rms1, rms2)
+                else:
+                    logger.info("Decorrelation did not improve RMS "
+                                "(%.2f -> %s); keeping original fit",
+                                rms1 if rms1 is not None else -1,
+                                rms2)
         residual_summary = {
             "method": "keplerian",
             "known_periods_used": residual["known_periods_used"],
@@ -631,6 +691,8 @@ def _run_keplerian_or_sinusoidal(rv_data, known_periods, target):
             residual_summary["keplerian_instruments"] = kep_fit.get("instruments", {})
             residual_summary["keplerian_rms_before_ms"] = kep_fit.get("rms_before_ms")
             residual_summary["keplerian_rms_after_ms"] = kep_fit.get("rms_after_ms")
+
+        residual_summary["activity_decorrelation"] = decorr_summary
 
         return residual_summary
 
