@@ -463,6 +463,24 @@ class TestKeplerianGP:
         assert result["gp"] is None
 
 
+class Test61VirFallback:
+    """61 Virginis reference data (7c.5)."""
+
+    def test_three_confirmed_planets(self):
+        from src.deep_dive import _known_planets_fallback
+
+        planets = _known_planets_fallback({"hd": "HD 115617"})
+        assert planets is not None
+        confirmed = [p for p in planets if p.get("confirmed")]
+        assert len(confirmed) == 3
+        periods = sorted(p["period_days"] for p in confirmed)
+        assert periods[0] == pytest.approx(4.215, rel=0.001)
+        assert periods[1] == pytest.approx(38.08, rel=0.001)
+        assert periods[2] == pytest.approx(123.2, rel=0.001)
+        # All have literature K for fit initialization
+        assert all(p.get("k_ms") for p in confirmed)
+
+
 class TestIndicatorThreading:
     """Indicators must survive filtering and binning."""
 

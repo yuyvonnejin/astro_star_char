@@ -304,18 +304,40 @@ def _known_planets_fallback(target):
              "eccentricity": 0.16, "distance_pc": 3.65},
         ],
         "HD 115617": [
+            # 3 confirmed planets per Laliotis et al. (2023, AJ 165, 176)
+            # Table values: P, K, e from their joint HARPS+HIRES fit.
+            # Planet d history: Vogt+2010 discovery (22.9 Me), flagged
+            # false positive by Rosenthal+2021, reconfirmed at lower
+            # mass by Laliotis+2023 and Cretignier+2023.
+            # NASA archive default rows still carry Vogt 2010 values.
             {"pl_name": "61 Vir b", "hostname": "HD 115617",
-             "period_days": 4.215, "mass_earth": 5.1, "mass_jupiter": 0.016,
+             "period_days": 4.21498, "mass_earth": 5.98,
+             "mass_jupiter": 0.0188,
              "radius_earth": None, "radius_jupiter": None,
              "discovery_method": "Radial Velocity", "discovery_year": 2009,
-             "semi_major_axis_au": 0.050, "eq_temp_k": None,
-             "eccentricity": 0.12, "distance_pc": 8.56},
+             "semi_major_axis_au": 0.0502, "eq_temp_k": None,
+             "eccentricity": 0.033, "distance_pc": 8.53,
+             "k_ms": 2.47, "confirmed": True,
+             "reference": "Laliotis+2023"},
             {"pl_name": "61 Vir c", "hostname": "HD 115617",
-             "period_days": 38.021, "mass_earth": 18.2, "mass_jupiter": 0.057,
+             "period_days": 38.079, "mass_earth": 17.94,
+             "mass_jupiter": 0.0564,
              "radius_earth": None, "radius_jupiter": None,
              "discovery_method": "Radial Velocity", "discovery_year": 2009,
-             "semi_major_axis_au": 0.217, "eq_temp_k": None,
-             "eccentricity": 0.14, "distance_pc": 8.56},
+             "semi_major_axis_au": 0.2175, "eq_temp_k": None,
+             "eccentricity": 0.026, "distance_pc": 8.53,
+             "k_ms": 3.56, "confirmed": True,
+             "reference": "Laliotis+2023"},
+            {"pl_name": "61 Vir d", "hostname": "HD 115617",
+             "period_days": 123.2, "mass_earth": 10.82,
+             "mass_jupiter": 0.034,
+             "radius_earth": None, "radius_jupiter": None,
+             "discovery_method": "Radial Velocity", "discovery_year": 2009,
+             "semi_major_axis_au": 0.476, "eq_temp_k": None,
+             "eccentricity": 0.15, "distance_pc": 8.53,
+             "k_ms": 1.47, "confirmed": True,
+             "reference": "Laliotis+2023 (FP per Rosenthal+2021, "
+                          "reconfirmed 2023)"},
         ],
     }
 

@@ -1,6 +1,6 @@
 # Phase 7c: Convergence Improvements and Second-Target Validation
 
-## Status: 7c.1 + 7c.2 complete (2026-07-02); see Results sections at bottom
+## Status: 7c.1, 7c.2, 7c.3, 7c.5 complete (2026-07-02); 7c.4 (juliet) optional, not started
 
 ## Context
 
@@ -348,3 +348,76 @@ properly.
 2.66 -> 1.73 (binning) -> 1.00 (decorrelation) -> 0.612 (GP).
 Remaining steps: 7c.4 juliet model comparison (optional),
 7c.5 second-target validation on 61 Virginis.
+
+---
+
+## 7c.5 Results: 61 Virginis (2026-07-02)
+
+### Literature reference update
+
+Current literature status (verified via web search + Laliotis et al.
+2023 paper, arXiv:2302.10310):
+
+- 61 Vir d history parallels HD 20794 e: discovered by Vogt+2010
+  (22.9 Me), flagged false positive by Rosenthal+2021 (CLS),
+  reconfirmed at lower mass by Laliotis+2023 and Cretignier+2023.
+- NASA archive default rows still carry Vogt 2010 parameters.
+- `_known_planets_fallback()` updated with Laliotis+2023 Table values:
+  b: P=4.21498, K=2.47+/-0.11, e=0.033
+  c: P=38.079,  K=3.56+/-0.12, e=0.026
+  d: P=123.2,   K=1.47+/-0.17, e=0.15
+- Laliotis+2023 also report a ~5911 d long-period activity signal
+  (magnetic cycle), within our GP prior bounds.
+
+### Data (DACE v3)
+
+3,224 raw measurements, 11 instruments, 40-year baseline
+(14,778 days). Filter chain: CORAVEL excluded (320 m/s precision),
+17 outliers sigma-clipped, 3,188 -> 883 nightly bins across 10
+instruments (APF, COUDE, ESPRESSO18/19, HAMILTON, HARPS03/15,
+HIRES, HIRES-POST04, UCLES). Mixed zero-points handled by
+pre-centering: HARPS/ESPRESSO absolute (~-7.9 km/s), HIRES/APF/
+UCLES/HAMILTON relative (~0 m/s).
+
+### Results vs Laliotis et al. (2023)
+
+| Planet | Pipeline P (d) | Lit P (d) | Pipeline K (m/s) | Lit K (m/s) | K error |
+|--------|---------------|-----------|------------------|-------------|---------|
+| b | 4.2150 | 4.21498 | 2.441 | 2.47 +/- 0.11 | -1.2% |
+| c | 38.078 | 38.079 | 3.495 | 3.56 +/- 0.12 | -1.8% |
+| d | 123.04 | 123.2 | 1.511 | 1.47 +/- 0.17 | +2.8% |
+
+All three K amplitudes within 3% of literature and inside the
+published 1-sigma intervals. Periods essentially exact. The
+disputed-then-reconfirmed planet d is cleanly recovered.
+
+Other outputs:
+- Jitters: modern instruments 0.7-2.5 m/s; legacy HAMILTON 7.4,
+  COUDE 16.0 m/s (physically sensible)
+- Decorrelation: marginal here (RMS 5.18 -> 5.15) -- indicators only
+  exist for HARPS03 (225 of 883 bins) and HIRES S-index
+- GP: modest (5.15 -> 4.85 m/s), amp 1.37 m/s, per ~2095 d
+- Residual periodogram: only 1-day alias family remains; no
+  unexplained planet-like signals
+- Final RMS 4.85 m/s is dominated by legacy instrument scatter
+  (HAMILTON/COUDE), not by unmodeled signal
+
+### Success criteria: status
+
+Plan target: P within 2%, K within 30%.
+Achieved: P within 0.13%, K within 3%.
+
+As predicted, in the K >> activity regime the pipeline converges
+essentially to literature values without needing the GP; binning +
+honest optimizer suffice.
+
+### Verdict
+
+7c.5 complete. Two-target validation passed:
+- HD 20794 (hard regime, K ~ 0.5 m/s < activity): K to 8-12%
+- 61 Vir (moderate regime, K ~ 1.5-3.6 m/s > activity): K to 3%
+The proximity-ordered survey infrastructure (filter -> bin ->
+Keplerian -> decorrelate -> GP) generalizes across targets and
+instrument mixes without per-target code changes -- only literature
+reference data per target. Remaining optional: 7c.4 juliet for
+posterior uncertainties and model comparison.
