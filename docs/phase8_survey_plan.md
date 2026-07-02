@@ -1,6 +1,57 @@
 # Phase 8: From Validated Chain to Proximity-Ordered Survey
 
-## Status: 8.1 + 8.2 implemented (2026-07-02); HD 20794 MCMC verification run in progress
+## Status: 8.1 + 8.2 complete (2026-07-02); next: 8.3 survey driver
+
+### 8.1 verification: HD 20794 MCMC results (2026-07-02)
+
+Full chain with mcmc_final=True (3 ensembles x 50 walkers x 1000
+steps, serial, BLAS capped to 4 threads): ~35 min wall clock.
+
+| Planet | Pipeline K (m/s) | Nari 2025 K (m/s) | Consistency |
+|--------|------------------|--------------------|-------------|
+| b | 0.687 +/- 0.107 | 0.614 +/- 0.048 | 0.6 sigma |
+| c | 0.458 +/- 0.115 | 0.502 | 0.4 sigma |
+| d | 0.612 +/- 0.465 | 0.567 | 0.1 sigma |
+
+All three K amplitudes statistically consistent with literature --
+the 8.1 acceptance criterion is met. Additional error bars: periods
+(P_b +/- 0.003 d), instrument gammas (+/-1-2 m/s), jitters
+(+/-0.1 m/s), GP hyperparameters.
+
+Honest caveats:
+- Chains did not pass radvel's strict convergence tests (G-R);
+  errors are approximate. Survey runs needing publication-grade
+  posteriors should raise mcmc_nsteps.
+- K_d error (+/-0.465, 76% relative) is large because the GP and
+  planet d (647 d) compete for long-period signal -- a real
+  degeneracy the posterior correctly exposes, not a bug.
+- P_d formal error (+/-0.4 d) is likely underestimated given
+  non-convergence; the 654 vs 648 d offset should not be
+  over-interpreted.
+
+### Performance findings (compute optimization)
+
+- Bug found: radvel serial=True + default ensembles=8 runs 8
+  ensembles SEQUENTIALLY (8x work). First run killed at 98 min,
+  ~11 cores busy. Fixed with mcmc_ensembles=3.
+- BLAS thread cap (OMP/MKL/OPENBLAS_NUM_THREADS=4): CPU usage
+  dropped from ~11 cores to ~1.2 cores for the same progress rate
+  -- thread coordination was pure overhead on 542x542 Cholesky.
+- Net: >8x wall-clock improvement. Survey defaults: ensembles=3,
+  capped threads, MCMC only on final scorecard runs.
+- Decision on further optimization: per-target process parallelism
+  at 8.3 (best ROI); celerite2 O(N) kernel only if a 15 pc shell
+  (~100 targets) demands it; GPU not worth it (tiny matrices,
+  sequential sampler).
+
+### Post-MCMC state fix
+
+radvel.mcmc leaves the posterior object at an arbitrary final walker
+position (observed: GP hyperparameters drifted from MAP while
+well-constrained planet params stayed put). fit_keplerian now
+restores every sampled parameter to its chain median after MCMC, so
+reported values, residuals, and GP predictions come from one
+consistent state.
 
 ### 8.1 implementation notes
 - radvel.mcmc called with serial=True (parallel ensembles use

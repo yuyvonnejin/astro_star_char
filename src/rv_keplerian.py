@@ -34,6 +34,18 @@ def _chain_err(chains, key):
     return float((hi - lo) / 2.0)
 
 
+def _chain_med(chains, key, default):
+    """Posterior median of a chain column, or `default` without chains.
+
+    radvel.mcmc leaves the posterior object at an arbitrary final
+    walker position, so post-MCMC parameter values must be taken from
+    the chains, not from post.params.
+    """
+    if chains is None or key not in chains:
+        return default
+    return float(np.median(np.asarray(chains[key], dtype=float)))
+
+
 def _sync_vary_flags(post):
     """Push params-dict vary flags into the posterior's vector cache.
 
@@ -63,6 +75,7 @@ _GP_HNAMES = ["gp_per", "gp_perlength", "gp_explength", "gp_amp"]
 def fit_keplerian(time, rv, rv_err, instruments, planet_params,
                   exclude_instruments=None, fix_eccentricities=False,
                   run_mcmc=False, mcmc_nwalkers=50, mcmc_nsteps=1000,
+                  mcmc_ensembles=3,
                   use_gp=False, gp_hyperparams=None):
     """Fit a joint Keplerian model to multi-instrument RV data.
 
@@ -99,6 +112,10 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
         Number of MCMC walkers.
     mcmc_nsteps : int
         Number of MCMC steps per walker.
+    mcmc_ensembles : int
+        Number of independent ensembles. radvel's default is 8, and
+        with serial=True they run SEQUENTIALLY -- 8x the work. 3 is
+        the minimum for cross-ensemble Gelman-Rubin diagnostics.
     use_gp : bool
         If True, model correlated stellar activity noise with a
         quasi-periodic Gaussian Process (RadVel GPLikelihood, pure
@@ -335,14 +352,18 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
     # Optional MCMC
     mcmc_chains = None
     if run_mcmc:
-        logger.info("Running MCMC (%d walkers x %d steps, serial)...",
-                     mcmc_nwalkers, mcmc_nsteps)
+        logger.info("Running MCMC (%d ensembles x %d walkers x %d "
+                     "steps, serial)...",
+                     mcmc_ensembles, mcmc_nwalkers, mcmc_nsteps)
         try:
             # serial=True: radvel's default parallel ensembles use
             # multiprocessing, which fails when called from library
             # code on Windows (spawn re-imports without __main__).
+            # ensembles must be passed explicitly: serial mode runs
+            # them sequentially, so the default of 8 means 8x work.
             chains = radvel.mcmc(
                 post, nwalkers=mcmc_nwalkers, nrun=mcmc_nsteps,
+                ensembles=mcmc_ensembles,
                 serial=True, headless=True, savename=None,
             )
             mcmc_chains = chains
@@ -350,10 +371,26 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
         except Exception as e:
             logger.warning("MCMC failed: %s", e)
 
+    if mcmc_chains is not None:
+        # radvel.mcmc leaves post at an arbitrary final walker
+        # position. Restore every sampled parameter to its posterior
+        # median so reported values, residuals, and GP predictions
+        # are all computed from the same consistent state.
+        n_restored = 0
+        for key in post.name_vary_params():
+            if key in mcmc_chains:
+                post.params[key].value = _chain_med(mcmc_chains, key,
+                                                    post.params[key].value)
+                n_restored += 1
+        post.vector.dict_to_vector()
+        logger.info("Posterior restored to chain medians (%d params)",
+                    n_restored)
+
     # Extract results
     fitted_params = post.params
 
-    # Planet parameters
+    # Planet parameters. With MCMC, post was restored to posterior
+    # medians above; without, these are the MAP values.
     planets_result = []
     for i in range(n_planets):
         idx = i + 1
