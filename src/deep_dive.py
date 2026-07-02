@@ -27,7 +27,7 @@ OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output" / "target_reports
 def run_deep_dive(target_name, max_tess_sectors=26,
                    injection_n_trials=50, injection_n_periods=15,
                    injection_n_amplitudes=10,
-                   save_report=True):
+                   save_report=True, bin_nightly=True):
     """Run comprehensive deep-dive analysis on a single target star.
 
     Parameters
@@ -44,6 +44,10 @@ def run_deep_dive(target_name, max_tess_sectors=26,
         Number of K amplitudes in injection-recovery grid.
     save_report : bool
         If True, save JSON and markdown reports to output/target_reports/.
+    bin_nightly : bool
+        If True (default), bin RV measurements to one point per
+        instrument per night before Keplerian fitting. Suppresses
+        correlated intra-night noise (p-modes, granulation).
 
     Returns
     -------
@@ -98,7 +102,8 @@ def run_deep_dive(target_name, max_tess_sectors=26,
     result["transit_search"] = tess_result.get("transit")
 
     # Step 5: RV data retrieval and multi-planet analysis
-    rv_result = _run_rv_analysis(target, known_periods)
+    rv_result = _run_rv_analysis(target, known_periods,
+                                 bin_nightly=bin_nightly)
     result["rv_data"] = rv_result.get("rv_data")
     result["rv_residual_analysis"] = rv_result.get("residual_analysis")
 
@@ -486,18 +491,19 @@ def _run_tess_analysis(target, stellar_mass, stellar_radius, stellar_teff,
         }
 
 
-def _run_rv_analysis(target, known_periods):
+def _run_rv_analysis(target, known_periods, bin_nightly=True):
     """Run RV data retrieval and multi-planet residual analysis.
 
     Uses Keplerian fitting via RadVel if available, falls back to
     sinusoidal subtraction otherwise. Filters out low-precision
-    instruments (CORAVEL) before analysis.
+    instruments (CORAVEL) before analysis. Optionally bins to one
+    point per instrument per night.
     """
     logger.info("--- RV Data + Residual Analysis ---")
     try:
         from src.rv_data import (
             query_dace_rv, rv_periodogram, rv_residual_analysis,
-            rv_filter_instruments,
+            rv_filter_instruments, rv_bin_nightly,
         )
 
         rv_data = query_dace_rv(target["hd"])
@@ -517,9 +523,15 @@ def _run_rv_analysis(target, known_periods):
         if excluded:
             logger.info("Excluded instruments: %s", excluded)
 
+        n_filtered = rv_data_filtered["n_measurements"]
+        if bin_nightly:
+            rv_data_filtered = rv_bin_nightly(rv_data_filtered)
+
         rv_summary = {
             "n_measurements": rv_data_filtered["n_measurements"],
             "n_measurements_raw": rv_data["n_measurements"],
+            "n_measurements_filtered": n_filtered,
+            "binned_nightly": bool(bin_nightly),
             "time_baseline_days": rv_data_filtered["time_baseline_days"],
             "instruments": rv_data_filtered["instruments"],
             "instrument_summary": rv_data_filtered.get("instrument_summary"),

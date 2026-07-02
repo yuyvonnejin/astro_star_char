@@ -3,5 +3,5 @@ scipy
 astroquery
 pytest
 lightkurve
-dace-query
+dace-query>=3.0
 radvel

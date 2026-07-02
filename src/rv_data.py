@@ -892,6 +892,122 @@ def rv_filter_instruments(rv_data, exclude=None, min_precision_ms=None,
     }
 
 
+def rv_bin_nightly(rv_data):
+    """Bin RV measurements to one point per instrument per night.
+
+    Intra-night measurements are dominated by correlated noise
+    (p-mode oscillations, granulation) rather than independent
+    information. Standard practice for Keplerian fitting is nightly
+    binning; e.g., Nari et al. (2025) used 806 nightly-binned points
+    for HD 20794 instead of ~12,000 raw measurements.
+
+    Night boundary: floor(time). DACE times are RJD (JD - 2400000),
+    where the integer boundary falls at noon UTC -- daytime at
+    Chilean sites (La Silla, Paranal), so a single observing night
+    never crosses it.
+
+    Binned RV is the inverse-variance weighted mean. Binned error is
+    the larger of the propagated error and the intra-night standard
+    error (scatter / sqrt(N)), so nights with internal scatter beyond
+    their formal errors are not overweighted.
+
+    Parameters
+    ----------
+    rv_data : dict
+        RV data dict with keys: time, rv, rv_err, instrument,
+        instruments, n_measurements, time_baseline_days.
+
+    Returns
+    -------
+    dict
+        Binned RV data with same structure as input, plus
+        'binned_nightly': True and 'n_measurements_unbinned'.
+        Extra keys from the input (e.g. excluded_instruments)
+        are passed through.
+    """
+    time = np.asarray(rv_data["time"], dtype=float)
+    rv = np.asarray(rv_data["rv"], dtype=float)
+    rv_err = np.asarray(rv_data["rv_err"], dtype=float)
+    instruments = list(rv_data["instrument"])
+
+    n_in = len(time)
+    if n_in == 0:
+        result = dict(rv_data)
+        result["binned_nightly"] = True
+        result["n_measurements_unbinned"] = 0
+        return result
+
+    nights = np.floor(time).astype(int)
+
+    # Group indices by (instrument, night)
+    groups = {}
+    for i in range(n_in):
+        key = (instruments[i], nights[i])
+        groups.setdefault(key, []).append(i)
+
+    time_b, rv_b, err_b, inst_b = [], [], [], []
+    for key in groups:
+        idx = np.array(groups[key])
+        t_g = time[idx]
+        rv_g = rv[idx]
+        err_g = rv_err[idx]
+
+        # Guard against zero/negative errors in weighting
+        w = 1.0 / np.clip(err_g, 1e-6, None) ** 2
+        w_sum = np.sum(w)
+        rv_mean = float(np.sum(w * rv_g) / w_sum)
+        t_mean = float(np.sum(w * t_g) / w_sum)
+        err_prop = float(np.sqrt(1.0 / w_sum))
+        if len(idx) > 1:
+            scatter_err = float(np.std(rv_g, ddof=1) / np.sqrt(len(idx)))
+        else:
+            scatter_err = 0.0
+
+        time_b.append(t_mean)
+        rv_b.append(rv_mean)
+        err_b.append(max(err_prop, scatter_err))
+        inst_b.append(key[0])
+
+    # Sort by time
+    order = np.argsort(time_b)
+    time_b = np.array(time_b)[order]
+    rv_b = np.array(rv_b)[order]
+    err_b = np.array(err_b)[order]
+    inst_b = [inst_b[i] for i in order]
+    unique_b = sorted(set(inst_b))
+
+    inst_summary = {}
+    for inst in unique_b:
+        mask = np.array([i == inst for i in inst_b])
+        inst_summary[inst] = {
+            "n_measurements": int(np.sum(mask)),
+            "median_err_ms": round(float(np.median(err_b[mask])), 3),
+            "time_span_days": round(
+                float(time_b[mask][-1] - time_b[mask][0]), 1
+            ),
+        }
+
+    baseline = float(time_b[-1] - time_b[0]) if len(time_b) > 1 else 0.0
+
+    logger.info("Nightly binning: %d -> %d measurements (%d instruments)",
+                n_in, len(time_b), len(unique_b))
+
+    result = dict(rv_data)
+    result.update({
+        "time": time_b,
+        "rv": rv_b,
+        "rv_err": err_b,
+        "instrument": inst_b,
+        "n_measurements": len(time_b),
+        "time_baseline_days": baseline,
+        "instruments": unique_b,
+        "instrument_summary": inst_summary,
+        "binned_nightly": True,
+        "n_measurements_unbinned": n_in,
+    })
+    return result
+
+
 # --- Internal helpers ---
 
 def _generate_search_names(star_name):
@@ -988,7 +1104,11 @@ def _parse_dace_query_rv(data, star_name):
     times = np.array(data.get('rjd', []), dtype=float)
     rvs = np.array(data.get('rv', []), dtype=float)
     rv_errs = np.array(data.get('rv_err', []), dtype=float)
-    instruments = list(data.get('ins_name', ['unknown'] * len(times)))
+    # dace-query >= 3.0 renamed 'ins_name' to 'instrument_name'
+    instruments = data.get('instrument_name')
+    if instruments is None:
+        instruments = data.get('ins_name', ['unknown'] * len(times))
+    instruments = list(instruments)
     drs_qc = data.get('drs_qc', [True] * len(times))
 
     if len(times) == 0:

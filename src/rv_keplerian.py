@@ -21,6 +21,19 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def _sync_vary_flags(post):
+    """Push params-dict vary flags into the posterior's vector cache.
+
+    RadVel >= 1.4 stores parameter values and vary flags in a numpy
+    vector built at Posterior construction, and caches the vary-index
+    list on first use. Setting params[...].vary afterward changes only
+    the dict; the optimizer keeps using the stale vector. Without this
+    sync every parameter stays free regardless of vary flags.
+    """
+    post.vector.dict_to_vector()
+    post.list_vary_params()
+
+
 def fit_keplerian(time, rv, rv_err, instruments, planet_params,
                   exclude_instruments=None, fix_eccentricities=False,
                   run_mcmc=False, mcmc_nwalkers=50, mcmc_nsteps=1000):
@@ -197,6 +210,7 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
         post.params[f'per{idx}'].vary = False
         post.params[f'e{idx}'].vary = False
         post.params[f'w{idx}'].vary = False
+    _sync_vary_flags(post)
 
     logger.info("Running MAP optimization (pass 1: fixed P, e, w)...")
     try:
@@ -219,6 +233,7 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
             idx = i + 1
             post.params[f'w{idx}'].vary = True
         logger.info("Running MAP optimization (pass 2: free w, e fixed)...")
+    _sync_vary_flags(post)
 
     try:
         post = radvel.fitting.maxlike_fitting(post, verbose=False)
@@ -229,6 +244,7 @@ def fit_keplerian(time, rv, rv_err, instruments, planet_params,
     for i in range(n_planets):
         idx = i + 1
         post.params[f'per{idx}'].vary = True
+    _sync_vary_flags(post)
 
     logger.info("Running MAP optimization (pass 3: free P)...")
     try:

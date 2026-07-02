@@ -1,6 +1,6 @@
 # Phase 7c: Convergence Improvements and Second-Target Validation
 
-## Status: Draft (2026-07-01)
+## Status: 7c.1 complete (2026-07-02); see Results section at bottom
 
 ## Context
 
@@ -142,3 +142,86 @@ Do not chase Nari-exact numbers; phase7b3 section 6.3 defines the scope boundary
 - Existing suites must stay green:
   `./venv/Scripts/python.exe -m pytest tests/test_phase7a.py tests/test_phase7b.py tests/test_phase7b2.py -v`
 - New: `./venv/Scripts/python.exe -m pytest tests/test_phase7c.py -v`
+
+---
+
+## 7c.1 Results (2026-07-02)
+
+### Unplanned fixes required first
+
+**DACE API migration.** dace-query 2.0.0 stopped working (server endpoint
+returns 404; DACE migrated their API). Upgraded to dace-query 3.0.2.
+Breaking change: response key `ins_name` renamed to `instrument_name`;
+`_parse_dace_query_rv()` now reads both. Instrument labels unchanged
+(HARPS03/HARPS15/ESPRESSO18/ESPRESSO19), except CORAVEL-S is now CORAVEL
+(harmless: exclusion is precision-based, not name-based). The public
+dataset itself also changed server-side: HD 20794 now returns 9,077
+measurements (was 12,616 in March 2026); HARPS03 dropped from 10,338 to
+6,763. New response fields include ccf_fwhm, ccf_bispan, date_night --
+useful for 7c.2.
+
+**RadVel vary-flag bug (critical).** RadVel >= 1.4 caches parameter
+values and vary flags in a numpy vector at Posterior construction and
+caches the vary-index list on first use. Our code set
+`post.params[...].vary` after construction, which only changes the dict;
+the optimizer kept using the stale vector. Consequence: the entire
+3-pass MAP strategy and `fix_eccentricities` were no-ops in all Phase
+7b.2/7b.3 runs -- every pass fit all parameters freely, including dvdt
+and curv. Fixed with `_sync_vary_flags()` (calls
+`post.vector.dict_to_vector()` + `post.list_vary_params()`) after each
+vary-flag change. Regression tests added.
+
+### HD 20794 results: binned + fixed optimizer vs literature
+
+748 nightly bins (Nari 2025 used 806 -- close match), 3 instruments.
+
+| Parameter | Pipeline (7c.1) | Nari 2025 | 7b.3 (buggy fit) |
+|-----------|----------------|-----------|-------------------|
+| P_b (d) | 18.310 (0.03% off) | 18.315 | 13.5 (drifted) |
+| P_c (d) | 89.36 (0.4% off) | 89.68 | 91.2 |
+| P_d (d) | 642.6 (0.8% off) | 647.6 | 752.5 (drifted) |
+| K_b (m/s) | 0.883 | 0.614 | 0.82 |
+| K_c (m/s) | 0.495 (1.4% off) | 0.502 | 0.90 |
+| K_d (m/s) | 1.73 (3x high) | 0.567 | 1.22 |
+| e (all) | fixed at lit values | 0.06/0.08/0.45 | drifted to 0.7-0.9 |
+| H15-H03 offset (m/s) | 20.3 | 17.0 +/- 1.7 | 10.4 |
+| RMS after (m/s) | 4.28 | ~1.5 (after GP) | 1.77 |
+
+### Binning A/B (same fixed optimizer, same dataset)
+
+| Parameter | Unbinned (8,379 pts) | Binned (748 pts) | Nari 2025 |
+|-----------|---------------------|------------------|-----------|
+| P_b (d) | 18.289 | 18.310 | 18.315 |
+| P_c (d) | 90.42 | 89.36 | 89.68 |
+| P_d (d) | 631.8 | 642.6 | 647.6 |
+| K_b (m/s) | 1.44 | 0.883 | 0.614 |
+| K_c (m/s) | 1.15 | 0.495 | 0.502 |
+| K_d (m/s) | 2.66 | 1.73 | 0.567 |
+| RMS after (m/s) | 4.28 | 4.28 | ~1.5 |
+
+Binning improves every K amplitude (roughly halves them, toward
+literature) and slightly improves all periods, at the same residual
+RMS. Attribution is clean: correlated intra-night noise was inflating
+the amplitudes.
+
+### Interpretation
+
+- All three periods now recover to sub-1% of literature. This was the
+  main 7b.3 failure and is now solved by the honest 3-pass fit.
+- K_c essentially exact; K_b 44% high; K_d 3x too high.
+- Residual RMS went UP (1.77 -> 4.28 m/s) because the previous number
+  was an artifact: the buggy free-for-all fit absorbed stellar activity
+  into orbital parameters (extreme eccentricities). The honest fit
+  leaves activity in the residuals where it belongs.
+- Residual periodogram now shows the magnetic cycle directly: peaks at
+  3564 d (~the 3000 d cycle), 713 d, 400 d, 356 d (annual beat aliases).
+  This contaminates planet d (642 d) and explains its inflated K.
+- Verification criteria status: P_b target met (18.3 +/- 0.5), e sane
+  (fixed), K_c within tolerance. K_b/K_d and the residual activity
+  signal are exactly what 7c.2 (decorrelation) and 7c.3 (GP) target.
+
+### Verdict
+
+7c.1 complete. The vary-flag fix (found during 7c.1 verification) is a
+bigger improvement than binning itself. Next: 7c.2 activity indicator
+decorrelation, using ccf_fwhm/ccf_bispan now available from DACE v3.
