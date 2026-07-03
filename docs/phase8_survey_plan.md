@@ -1,6 +1,68 @@
 # Phase 8: From Validated Chain to Proximity-Ordered Survey
 
-## Status: 8.1 + 8.2 complete (2026-07-02); next: 8.3 survey driver
+## Status: 8.1 + 8.2 + 8.3 complete (2026-07-03); next: 8.4 catalog shells
+
+### 8.3 implementation notes (2026-07-03)
+
+- src/survey.py: run_survey() iterates targets nearest-first; per-target
+  try/except so one failure never kills the survey; outputs
+  output/survey/survey_results.json + survey_summary.md.
+- survey_target() is reference-first: data/known_planets.json decides
+  which planets are fitted; NASA archive only for uncurated targets.
+  Reuses deep_dive._run_rv_analysis (same chain as deep dives).
+- Zero-confirmed-planet targets (Tau Ceti) get no forced Keplerian fit;
+  candidates come from the binned-RV periodogram and the noise floor is
+  the per-instrument-centered scatter. Honest: no planet model imposed.
+- build_scorecard(): data quality, recovered-vs-reference planets
+  (k_ratio, n_sigma when k_err available), vetoed candidate list,
+  analytic detection limits (rv_detection_limit with final residual
+  RMS as noise; injection-based limits deferred).
+- vet_candidate_period(): basic veto set ahead of 8.5 -- 1-day alias
+  family (0.5/0.997/1.0/2.0 d), annual + first harmonic, rotation
+  harmonics (P/2, P, 2P), magnetic cycle +/-30%, cycle-annual beat
+  (the 414 d lesson), coverage < 2 cycles, known-planet match.
+  Surviving candidates cross-matched against unconfirmed literature
+  candidates by period.
+- Tau Ceti curation (HD 10700): zero confirmed planets. Tuomi+2013
+  b/c/d rejected; Feng+2017 g/h/e/f (20.00/49.41/162.87/636.13 d,
+  K ~ 0.3-0.5 m/s) all unconfirmed; Figueira+2025 ESPRESSO finds no
+  conclusive planets (20 d signal non-significant with activity model,
+  near rotation first harmonic). Rotation 46 d (Korolik+2023), weak
+  ~11 yr cycle. k_ms in JSON computed from m sin i (approximate).
+- Also added: daily-alias veto for known planets (f_alias = 1 -/+ 1/P
+  cycles/day); caught 61 Vir b's 1.31 d alias masquerading as a
+  candidate in the first run.
+- Tests: 28 in test_phase8.py (vetoes incl. 414 d beat + 1 d alias +
+  daily alias of known planet, scorecard construction with/without
+  fit, failure injection, distance ordering); Phase 7 regression 93
+  tests green.
+
+### First survey run (2026-07-03, GP on, MCMC off)
+
+| Target | N binned | Baseline (d) | RMS (m/s) | Planets rec/ref | Candidates | K_lim@100d |
+|---|---|---|---|---|---|---|
+| Tau Ceti | 2280 | 13140 | 3.96 | 0/0 | 0 | 0.76 |
+| 82 G. Eridani | 748 | 7128 | 1.82 | 3/3 | 2 | 0.48 |
+| 61 Virginis | 883 | 14614 | 4.87 | 3/3 | 3 | 1.16 |
+
+- 3 targets, 3 ok, 0 failed; all confirmed reference planets recovered
+  at both anchors (HD 20794 K within 8-12%, 61 Vir K within 1-7%,
+  matching Phase 7c single-target results -- survey wrapper does not
+  degrade the chain).
+- Tau Ceti scorecard is the survey's honest null: no Keplerian fit
+  imposed, no candidate peaks survive vetoes, and the analytic K limit
+  (0.76 m/s at 100 d, from 3.96 m/s unmodeled scatter) sits ABOVE the
+  Feng+2017 candidate amplitudes (0.3-0.5 m/s). We cannot confirm or
+  refute them -- consistent with Figueira+2025 needing dedicated
+  ESPRESSO modeling. A GP-only (0-planet) activity model to lower the
+  Tau Ceti noise floor is a natural 8.5 follow-up.
+- Surviving candidates are weak (power 0.05-0.07) and carry the
+  scorecard note that they are follow-up flags, not detections;
+  per-peak FAP is the main missing piece (8.5). HD 20794: 114.6 d,
+  8.5 d. 61 Vir: 4.7/5.4/6.5 d cluster (plausibly inter-planet
+  aliases; needs the 8.5 alias-of-candidate machinery).
+- Wall clock ~6 min for 3 targets without MCMC (BLAS capped);
+  MCMC scorecard runs remain ~35 min/target.
 
 ### 8.1 verification: HD 20794 MCMC results (2026-07-02)
 
