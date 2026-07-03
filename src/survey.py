@@ -445,7 +445,7 @@ def survey_target(target_name, use_gp=True, mcmc=False, bin_nightly=True,
     return card
 
 
-def run_survey(target_names=None, use_gp=True, mcmc=False,
+def run_survey(target_names=None, shell=None, use_gp=True, mcmc=False,
                bin_nightly=True, decorrelate_activity=True,
                out_dir=OUTPUT_DIR, save=True):
     """Run the RV survey over a target list, nearest star first.
@@ -454,7 +454,12 @@ def run_survey(target_names=None, use_gp=True, mcmc=False,
     ----------
     target_names : list of str, optional
         Catalog names or HD identifiers. Default: the Phase 8.3
-        anchor set (Tau Ceti, HD 20794, 61 Vir).
+        anchor set (Tau Ceti, HD 20794, 61 Vir), unless shell is
+        given.
+    shell : tuple(float, float), optional
+        (min_pc, max_pc) distance shell; targets come from the
+        generated shell catalog (build_shell_catalog first). Ignored
+        when target_names is given.
     use_gp : bool
         Final GP activity-model fit per target (default True).
     mcmc : bool
@@ -470,6 +475,15 @@ def run_survey(target_names=None, use_gp=True, mcmc=False,
     """
     from src.targets import get_target
 
+    if target_names is None and shell is not None:
+        from src.targets import targets_in_shell
+        shell_targets = targets_in_shell(shell)
+        target_names = [t["hd"] for t in shell_targets]
+        logger.info("Shell %s: %d targets from shell catalog",
+                    shell, len(target_names))
+        if not target_names:
+            logger.warning("Shell catalog empty for %s; run "
+                           "build_shell_catalog() first", shell)
     if target_names is None:
         target_names = list(DEFAULT_SURVEY_TARGETS)
 
@@ -632,6 +646,9 @@ def main():
         description="Run the RV survey over catalog targets")
     parser.add_argument("--targets", nargs="+",
                         default=None, help="Target names or HD ids")
+    parser.add_argument("--shell", nargs=2, type=float, default=None,
+                        metavar=("MIN_PC", "MAX_PC"),
+                        help="Distance shell from the generated catalog")
     parser.add_argument("--mcmc", action="store_true",
                         help="MCMC error bars on final fits (slow)")
     parser.add_argument("--no-gp", action="store_true",
@@ -643,7 +660,9 @@ def main():
         level=logging.INFO,
         format="%(levelname)s %(message)s")
 
-    run_survey(target_names=args.targets, use_gp=not args.no_gp,
+    run_survey(target_names=args.targets,
+               shell=tuple(args.shell) if args.shell else None,
+               use_gp=not args.no_gp,
                mcmc=args.mcmc, out_dir=args.out_dir)
 
 

@@ -1,6 +1,36 @@
 # Phase 8: From Validated Chain to Proximity-Ordered Survey
 
-## Status: 8.1 + 8.2 + 8.3 complete (2026-07-03); next: 8.4 catalog shells
+## Status: 8.1-8.4 complete (2026-07-03); next: 8.5 vetting depth
+
+### 8.4 implementation notes (2026-07-03)
+
+- targets.py: build_shell_catalog() queries SIMBAD TAP (not Gaia DR3:
+  brightest nearest stars, e.g. Alpha Cen A, are missing or unreliable
+  in Gaia) for all stars with plx >= 1000/15 mas and FGK sp_type.
+- Client-side filters (filter_shell_rows, offline-testable):
+  FGK dwarf luminosity class (V / IV-V / absent; giants + pure IV
+  rejected), approximate Teff 4000-6300 K from a Pecaut & Mamajek
+  spectral-type table (teff_source="sptype_approx"), HD identifier
+  required (DACE/NASA are keyed on HD).
+- Component dedup: composite row dropped only when a lettered 'A'
+  component exists (70 Oph); when only B exists the composite IS the
+  primary (eta Cas A bug found in first sanity run).
+- targets_in_shell() merges curated TARGET_CATALOG entries (curated
+  wins on HD collision) -- covers boundary disagreements like Delta
+  Pavonis (G8IV in SIMBAD vs G8IV-V curated). Merge key is the full
+  HD string: HD 165341A / HD 165341B are different stars.
+- Cache: data/shell_catalog.json (176 targets < 15 pc). Shells:
+  0-6 pc 18 targets, 6-10 pc 40, 10-15 pc 119 (with curated merge).
+  103 K dwarfs -- the population the hardcoded list undersampled.
+- get_target() falls back to the shell catalog after the curated
+  list; run_survey(shell=(0,6)) / CLI --shell 0 6 runs a whole shell.
+- Sanity criterion PASS: all 9 curated targets < 15 pc reproduced;
+  HD 134060 (24 pc) correctly excluded.
+- Smoke test on uncurated shell target (eta Cas B, K7Ve): survey
+  scorecard works end-to-end -- NASA none_found, DACE has 117 binned
+  points (HAMILTON/HIRES legacy, 27.8 m/s precision), detection
+  limits reported. Data availability is itself survey output.
+- Tests: 43 in test_phase8.py; full offline regression 136 green.
 
 ### 8.3 implementation notes (2026-07-03)
 

@@ -419,3 +419,205 @@ class TestRunSurveyRobustness:
         survey.run_survey(["HD 115617", "HD 10700", "HD 20794"],
                           save=False)
         assert order == ["HD 10700", "HD 20794", "HD 115617"]
+
+
+# ============================================================
+# Shell catalog (8.4)
+# ============================================================
+
+class TestParseSpectralType:
+    def test_plain_dwarfs(self):
+        from src.targets import parse_spectral_type
+
+        g8 = parse_spectral_type("G8V")
+        assert g8["teff_k"] == 5490
+        assert g8["mass_msun"] == pytest.approx(0.87)
+        k5 = parse_spectral_type("K5V")
+        assert k5["teff_k"] == 4410
+
+    def test_half_subclass_interpolated(self):
+        from src.targets import parse_spectral_type
+
+        g85 = parse_spectral_type("G8.5V")
+        assert 5280 < g85["teff_k"] < 5490
+
+    def test_decorations_handled(self):
+        from src.targets import parse_spectral_type
+
+        assert parse_spectral_type("K6VeFe-1") is not None
+        assert parse_spectral_type("G2Va") is not None
+        assert parse_spectral_type("K0-V") is not None
+
+    def test_composite_takes_primary(self):
+        from src.targets import parse_spectral_type
+
+        procyon = parse_spectral_type("F5IV-V+DQZ")
+        assert procyon is not None
+        assert procyon["teff_k"] == 6550  # excluded later by Teff cut
+
+    def test_giants_and_nonfgk_rejected(self):
+        from src.targets import parse_spectral_type
+
+        assert parse_spectral_type("K0III") is None
+        assert parse_spectral_type("G8IV") is None
+        assert parse_spectral_type("M2V") is None
+        assert parse_spectral_type("DA2") is None
+        assert parse_spectral_type(None) is None
+
+    def test_subgiant_dwarf_boundary_accepted(self):
+        from src.targets import parse_spectral_type
+
+        assert parse_spectral_type("G8IV-V") is not None
+
+
+class TestFilterShellRows:
+    @staticmethod
+    def _rows():
+        return [
+            {"main_id": "* tau Cet", "plx": 273.8, "sp_type": "G8V",
+             "otype": "PM*", "ids": "HD  10700|HIP 8102|GJ 71"},
+            # Teff cut: Procyon F5IV-V is 6550 K > 6300
+            {"main_id": "* alf CMi", "plx": 285.0,
+             "sp_type": "F5IV-V+DQZ", "otype": "SB*",
+             "ids": "HD  61421|HIP 37279"},
+            # No HD identifier: dropped (archives keyed on HD)
+            {"main_id": "* alf Cen", "plx": 750.0, "sp_type": "G2V+K1V",
+             "otype": "SB*", "ids": "GJ 559|CCDM J14396-6050AB"},
+            # Composite + lettered component share HD digits
+            {"main_id": "*  70 Oph", "plx": 196.6, "sp_type": "K0-V",
+             "otype": "SB*", "ids": "HD 165341|HIP 88601"},
+            {"main_id": "*  70 Oph A", "plx": 195.7, "sp_type": "K0V",
+             "otype": "SB*", "ids": "HD 165341A"},
+            # Giant: rejected by luminosity class
+            {"main_id": "* alf Boo", "plx": 88.8, "sp_type": "K1.5III",
+             "otype": "RG*", "ids": "HD 124897|HIP 69673"},
+        ]
+
+    def test_filters_and_dedup(self):
+        from src.targets import filter_shell_rows
+
+        targets = filter_shell_rows(self._rows())
+        names = [t["name"] for t in targets]
+        assert "tau Cet" in names
+        assert "70 Oph A" in names        # lettered component kept
+        assert "70 Oph" not in names      # composite dropped
+        assert "alf CMi" not in names     # Teff cut
+        assert "alf Cen" not in names     # no HD
+        assert "alf Boo" not in names     # giant
+
+    def test_composite_kept_when_no_a_component(self):
+        """eta Cas case: HD 4614 + HD 4614B only -> composite is the
+        primary and must be kept."""
+        from src.targets import filter_shell_rows
+
+        rows = [
+            {"main_id": "* eta Cas", "plx": 168.8, "sp_type": "G0V",
+             "otype": "SB*", "ids": "HD   4614|HIP 3821"},
+            {"main_id": "* eta Cas B", "plx": 168.7, "sp_type": "K7Ve",
+             "otype": "PM*", "ids": "HD   4614B"},
+        ]
+        targets = filter_shell_rows(rows)
+        hds = [t["hd"] for t in targets]
+        assert "HD 4614" in hds
+        assert "HD 4614B" in hds
+
+    def test_fields_and_shell(self):
+        from src.targets import filter_shell_rows
+
+        targets = filter_shell_rows(self._rows())
+        tau = [t for t in targets if t["name"] == "tau Cet"][0]
+        assert tau["hd"] == "HD 10700"
+        assert tau["hip"] == 8102
+        assert tau["distance_pc"] == pytest.approx(3.65, abs=0.01)
+        assert tau["shell"] == "0-6"
+        assert tau["teff_source"] == "sptype_approx"
+        assert tau["mass_msun"] > 0.5
+
+    def test_sorted_by_distance(self):
+        from src.targets import filter_shell_rows
+
+        targets = filter_shell_rows(self._rows())
+        dists = [t["distance_pc"] for t in targets]
+        assert dists == sorted(dists)
+
+
+class TestShellSelection:
+    def test_assign_shell(self):
+        from src.targets import assign_shell
+
+        assert assign_shell(3.65) == "0-6"
+        assert assign_shell(6.04) == "6-10"
+        assert assign_shell(14.13) == "10-15"
+        assert assign_shell(24.15) is None
+
+    def test_targets_in_shell(self):
+        from src.targets import targets_in_shell
+
+        catalog = [
+            {"name": "A", "hd": "HD 1", "distance_pc": 3.0},
+            {"name": "B", "hd": "HD 2", "distance_pc": 8.0},
+            {"name": "C", "hd": "HD 3", "distance_pc": 5.0},
+        ]
+        picked = targets_in_shell((0, 6), catalog=catalog,
+                                  include_curated=False)
+        assert [t["name"] for t in picked] == ["A", "C"]
+
+    def test_targets_in_shell_curated_wins(self):
+        from src.targets import targets_in_shell
+
+        # Generated entry for Tau Ceti collides with the curated one
+        catalog = [
+            {"name": "tau Cet", "hd": "HD  10700", "distance_pc": 3.65,
+             "teff_k": 5490, "source": "simbad_tap"},
+        ]
+        picked = targets_in_shell((0, 6), catalog=catalog)
+        tau = [t for t in picked if "10700" in (t.get("hd") or "")]
+        assert len(tau) == 1
+        assert tau[0]["name"] == "Tau Ceti"  # curated version
+        # Curated-only targets in the shell are merged in
+        assert any(t["name"] == "Alpha Centauri A" for t in picked)
+
+    def test_get_target_falls_back_to_shell_catalog(self, monkeypatch):
+        import src.targets as targets_mod
+
+        shell_entry = {"name": "eps Eri", "hd": "HD 22049",
+                       "hip": 16537, "distance_pc": 3.22}
+        monkeypatch.setattr(targets_mod, "load_shell_catalog",
+                            lambda path=None: [shell_entry])
+        found = targets_mod.get_target("HD 22049")
+        assert found is not None and found["name"] == "eps Eri"
+        # Curated catalog still wins for its own entries
+        tau = targets_mod.get_target("HD 10700")
+        assert tau["name"] == "Tau Ceti"
+
+    def test_run_survey_shell_uses_catalog(self, monkeypatch):
+        import src.survey as survey
+        import src.targets as targets_mod
+
+        def fake_targets_in_shell(shell, catalog=None,
+                                  include_curated=True):
+            assert shell == (0, 6)
+            return [{"name": "eps Eri", "hd": "HD 22049",
+                     "distance_pc": 3.22}]
+
+        monkeypatch.setattr(targets_mod, "targets_in_shell",
+                            fake_targets_in_shell)
+        monkeypatch.setattr(
+            targets_mod, "load_shell_catalog",
+            lambda path=None: [{"name": "eps Eri", "hd": "HD 22049",
+                                "hip": None, "distance_pc": 3.22}])
+        seen = []
+
+        def fake_survey_target(name, **kwargs):
+            seen.append(name)
+            return {"target": {"name": name}, "status": "ok",
+                    "data": {"status": "ok"}, "planets": [],
+                    "n_planets_confirmed_ref": 0,
+                    "n_planets_recovered": 0,
+                    "candidates": {"surviving": [], "vetoed": []},
+                    "detection_limit": None, "residual_rms_ms": None}
+
+        monkeypatch.setattr(survey, "survey_target", fake_survey_target)
+        result = survey.run_survey(shell=(0, 6), save=False)
+        assert seen == ["HD 22049"]
+        assert result["n_targets"] == 1
