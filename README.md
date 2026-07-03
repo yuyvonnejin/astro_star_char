@@ -6,6 +6,10 @@ Compute physical properties of stars -- distance, temperature, luminosity, radiu
 > proximity-ordered RV exoplanet survey (Phase 7-8) built on top of
 > this pipeline. Start at [docs/project_status.md](docs/project_status.md)
 > for where things stand, how to run the survey, and next steps.
+> For a map of every src/ module and where its data comes from
+> (online APIs vs static tables vs generated files) plus what the
+> tests exercise, see
+> [docs/architecture_and_data_sources.md](docs/architecture_and_data_sources.md).
 
 ## What This Does
 

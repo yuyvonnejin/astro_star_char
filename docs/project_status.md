@@ -111,6 +111,9 @@ OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 \
 ## Document map
 
 - This file -- session entry point
+- docs/architecture_and_data_sources.md -- master reference: every
+  src module, what data is online vs static vs generated vs curated,
+  and what each test file exercises (offline/mocked/network)
 - docs/phase8_survey_plan.md -- Phase 8 design + per-step results
 - docs/phase7c_plan.md -- chain upgrades (binning, decorrelation, GP)
 - docs/thesis_final_summary.md -- project thesis at the March 2026
