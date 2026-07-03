@@ -2,6 +2,11 @@
 
 Compute physical properties of stars -- distance, temperature, luminosity, radius, and mass -- from Gaia DR3 survey data. Optionally retrieve TESS/Kepler light curves for variability analysis and exoplanet transit detection.
 
+> **Current status / resuming work:** the project has grown into a
+> proximity-ordered RV exoplanet survey (Phase 7-8) built on top of
+> this pipeline. Start at [docs/project_status.md](docs/project_status.md)
+> for where things stand, how to run the survey, and next steps.
+
 ## What This Does
 
 Given photometric observations from the [Gaia DR3](https://www.cosmos.esa.int/web/gaia/dr3) catalog, this pipeline runs five sequential modules:
